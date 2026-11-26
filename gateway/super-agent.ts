@@ -4564,7 +4564,8 @@ export class SuperAgentConversations {
     if (name === 'openmotion_capability_run' && value.dryRun !== true && value.asset?.id) {
       const asset = value.asset;
       const versionId = value.version?.id ?? asset.currentVersionId;
-      if (versionId) {
+      // 3D .glb assets are wired directly into Three.js via mediaUrl rather than rendered as an image preview card.
+      if (versionId && asset.modality !== '3d') {
         const version = value.version ?? assetVersion(asset, versionId);
         const url = assetMediaUrl(asset.id, versionId);
         return this.presentChatArtifact(active, {
@@ -4584,7 +4585,7 @@ export class SuperAgentConversations {
     }
 
     if (name === 'openmotion_assets_use' || name === 'openmotion_assets' || name === 'openmotion_asset_manage') {
-      if (args.action === 'import' && value.asset?.id) {
+      if (args.action === 'import' && value.asset?.id && value.asset.modality !== '3d') {
         const asset = value.asset;
         const versionId = asset.currentVersionId;
         const url = assetMediaUrl(asset.id, versionId);
