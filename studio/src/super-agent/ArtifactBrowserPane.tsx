@@ -2085,7 +2085,9 @@ export function ArtifactBrowserPane({
   // (portaled, so their state and menus stay the same code as the toolbar's).
   const [railToolsEl, setRailToolsEl] = useState<HTMLDivElement | null>(null);
   const toolsInRail = Boolean(feedRailActive && railToolsEl);
-  const toRail = (node: ReactNode) => (toolsInRail && railToolsEl ? createPortal(node, railToolsEl) : node);
+  // Until the rail slot exists, render nothing (the row is hidden anyway) so Share mounts once, in the rail,
+  // and its auto-open request is consumed by the instance that stays.
+  const toRail = (node: ReactNode) => (!feedRailActive ? node : railToolsEl ? createPortal(node, railToolsEl) : null);
   const railMenuSide = templateFeed?.placement === 'bottom' ? 'top' as const : 'left' as const;
   const railMenuAlign = templateFeed?.placement === 'bottom' ? 'end' as const : 'center' as const;
   const toolbarRemix = feedRailActive ? undefined : toolbarGameAction;
