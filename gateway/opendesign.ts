@@ -41,14 +41,14 @@ export type Cloud3dModelEntry = {
 };
 
 async function cloudSpatialModels(
-  baseUrl: string,
-  key: string,
   kind: '3d_generations' | 'world_generations',
   labels: Record<string, string>,
+  baseUrl: string,
+  bearer: string,
   fetcher: Fetcher = publicProviderFetch,
 ): Promise<Cloud3dModelEntry[]> {
   // AMR returns only image/video unless include_audio=true is passed.
-  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${key}` } });
+  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${bearer}` } });
   if (!Array.isArray(body.models)) return [];
   return body.models
     .filter((row: any) => typeof row.model === 'string' && CLOUD_MODEL_ID_PATTERN.test(row.model) && row.kind === kind)
@@ -59,16 +59,16 @@ async function cloudSpatialModels(
     }));
 }
 
-export async function cloud3dModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
-  return cloudSpatialModels(baseUrl, key, '3d_generations', {
+export async function cloud3dModels(baseUrl: string, bearer: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
+  return cloudSpatialModels('3d_generations', {
     'tripo-3.0': 'Tripo 3D v3 (GLB + PBR + optional rig/retarget)',
-  }, fetcher);
+  }, baseUrl, bearer, fetcher);
 }
 
-export async function cloudWorldModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
-  return cloudSpatialModels(baseUrl, key, 'world_generations', {
+export async function cloudWorldModels(baseUrl: string, bearer: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
+  return cloudSpatialModels('world_generations', {
     'worldlabs-atlas': 'World Labs Atlas v2 (Scene frames, RGB-D, Splats & Mesh)',
-  }, fetcher);
+  }, baseUrl, bearer, fetcher);
 }
 
 /** Edit-capable image models accept references; video models with input images accept a first frame. */
