@@ -176,8 +176,8 @@ test('test npm artifacts contain their application, locked manifest and no bundl
     assert.deepEqual(cards.cards.map((card: any) => card.templateId), onboardingTemplateIds.slice(-3));
     assert(cards.cards.every((card: any) => card.templateKind === 'reference' && !card.createArgs));
     const readme = await readFile(path.join(installer, 'package/README.md'), 'utf8');
-    const raw = `https://raw.githubusercontent.com/OpenDesignHQ/opengame/${release.commit}/`;
-    const browse = `https://github.com/OpenDesignHQ/opengame/blob/${release.commit}/`;
+    const raw = `https://raw.githubusercontent.com/nexu-io/opengame/${release.commit}/`;
+    const browse = `https://github.com/nexu-io/opengame/blob/${release.commit}/`;
     assert(readme.includes('The First Super Game Agent'));
     for (const asset of ['opengame-logo.svg', 'opengame-hero.webp', 'agents/local-agents.png']) {
       assert(readme.includes(`src="${raw}docs/readme/${asset}"`), asset);
@@ -187,7 +187,7 @@ test('test npm artifacts contain their application, locked manifest and no bundl
     assert(readme.includes(`](${browse}docs/opengame-setup.md)`));
     assert(readme.includes(`](${browse}docs/opengame-architecture.md)`));
     assert(readme.includes('](#choose-agent)'));
-    assert(readme.includes('https://github.com/OpenDesignHQ/opengame/issues'));
+    assert(readme.includes('https://github.com/nexu-io/opengame/issues'));
     assert(readme.includes(`href="${browse}LICENSE"`));
     assert(!readme.includes('](docs/') && !readme.includes('](templates/'));
     assert(!readme.includes(`https://raw.githubusercontent.com/nexu-io/openmotion/${release.commit}/`));

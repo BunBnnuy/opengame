@@ -47,7 +47,7 @@ OpenGame is **the first open-source Super Game Agent** — turning **DeepSeek (D
 Paste this instruction into **DeepSeek TUI / Harness**, **Claude Code**, **Codex**, **WorkBuddy**, **Cursor**, **Gemini CLI**, or any of the [22 supported local agents](#agent-wall):
 
 ```text
-Read https://github.com/OpenDesignHQ/opengame/blob/main/docs/install.md and follow the instructions to install and connect OpenGame in the current agent, open Game Studio at /studios/game, and help me remix or build a playable game with the openmotion-game skill.
+Read https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md and follow the instructions to install and connect OpenGame in the current agent, open Game Studio at /studios/game, and help me remix or build a playable game with the openmotion-game skill.
 ```
 
 ### 2. Install the Game Skill with Skills CLI
@@ -55,7 +55,7 @@ Read https://github.com/OpenDesignHQ/opengame/blob/main/docs/install.md and foll
 Install the dedicated game-engineering skill (`openmotion-game` + 18 game craft, 3C, animation, playable-ad, and QA reference handbooks) with the [Skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
-npx skills add OpenDesignHQ/opengame --skill openmotion-game
+npx skills add nexu-io/opengame --skill openmotion-game
 ```
 
 > Installing the Skill copies the game engineering instructions into your agent. Complete the local Studio & MCP setup below so your agent can call the 12 `openmotion_game_*` tools and open Game Studio.
@@ -65,7 +65,7 @@ npx skills add OpenDesignHQ/opengame --skill openmotion-game
 Requires **Git**, **npm**, and **Node.js 22.18+** (CI pins Node.js 26.11.1).
 
 ```sh
-git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/OpenDesignHQ/opengame.git
+git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/nexu-io/opengame.git
 cd opengame
 npm ci
 npm run build:studio
@@ -463,22 +463,22 @@ Share a playable game template, a remixable mini-game genre kit, an art-style gu
 | **Platform publishing adapters** | Packaging scripts, manifest generators, or submission checklists for mini-game & web portals |
 | **Agent & model integrations** | Host setup adapters or BYOK multimodal provider support |
 
-[Contribute](CONTRIBUTING.md) · [Repository Guidelines](AGENTS.md) · [Report an Issue](https://github.com/OpenDesignHQ/opengame/issues)
+[Contribute](CONTRIBUTING.md) · [Repository Guidelines](AGENTS.md) · [Report an Issue](https://github.com/nexu-io/opengame/issues)
 
 ## Contributors
 
 Thanks to everyone who has taken part — code, game templates, skills, docs, feedback, and issues.
 
-<a href="https://github.com/OpenDesignHQ/opengame/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=OpenDesignHQ/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame contributors" />
+<a href="https://github.com/nexu-io/opengame/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=nexu-io/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame contributors" />
 </a>
 
 ## Star History
 
-<a href="https://www.star-history.com/#OpenDesignHQ/opengame&amp;Date">
+<a href="https://www.star-history.com/#nexu-io/opengame&amp;Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date&amp;theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
-    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
+    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
   </picture>
 </a>
