@@ -1,0 +1,392 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import { existsSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { packageOpenGame } from '../scripts/package-opengame.mjs';
+import { setup, diagnose, callInstalled } from '../scripts/opengame-launcher.mjs';
+import {
+  applyStagedUpdate,
+  checkNpmUpdate,
+  compareSemver,
+  readInstallState,
+  retireIdleBackend,
+  rollbackInstallation,
+  stageNpmUpdate,
+  writeInstallState,
+} from '../scripts/opengame-updater.mjs';
+import { runFile, writeJSON } from '../scripts/runtime-assets.mjs';
+import { startServer } from '../server.ts';
+import { WorkspaceStore } from '../workspace.ts';
+
+import { offlineGame } from '../scripts/game-template-publication.ts';
+
+const repoNodeModules = path.resolve('node_modules');
+const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
+async function createGamesFixture(baseDir: string) {
+  const gamesDir = path.join(baseDir, 'games-fixture');
+  await mkdir(gamesDir, { recursive: true });
+  await cp(path.resolve('templates/games', offlineGame), path.join(gamesDir, offlineGame), { recursive: true });
+  const lazyDir = path.join(gamesDir, 'sky-dodger');
+  await mkdir(path.join(lazyDir, 'assets'), { recursive: true });
+  await writeFile(path.join(lazyDir, 'game.json'), JSON.stringify({
+    id: 'sky-dodger', title: 'Sky Dodger', description: 'Lazy-downloaded fixture game',
+    genre: 'shooter', style: 'pixel', setting: 'space', cover: 'assets/cover.png', status: 'published',
+  }, null, 2));
+  await writeFile(path.join(lazyDir, 'index.html'), '<!doctype html><title>Sky Dodger</title>');
+  await writeFile(path.join(lazyDir, 'assets/cover.png'), tinyPng);
+  return gamesDir;
+}
+const linkDeps = async (directory: string) => {
+  await symlink(repoNodeModules, path.join(directory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+};
+
+async function sriSha512(file: string) {
+  const bytes = await readFile(file);
+  return 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+}
+
+function withEnv(overrides: Record<string, string | undefined>, fn: () => Promise<void>) {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(overrides)) {
+    saved[key] = process.env[key];
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  return fn().finally(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+test('compareSemver orders stable and prerelease versions accurately', () => {
+  assert.equal(compareSemver('0.1.0', '0.1.0'), 0);
+  assert.equal(compareSemver('0.1.1', '0.1.0'), 1);
+  assert.equal(compareSemver('0.1.0-test.2.1', '0.1.0-test.1.1'), 1);
+  assert.equal(compareSemver('0.1.0', '0.1.0-test.9.1'), 1);
+  assert.equal(compareSemver('0.2.0-test.1.1', '0.1.9'), 1);
+});
+
+test('OpenGame setup isolates hosts and coexists with OpenMotion, then updates, defers on busy backend, and auto-rolls back crash loops', { timeout: 240_000 }, async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'opengame-e2e-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const gamesRoot = await createGamesFixture(dir);
+  const v1 = '0.1.0-test.1.1';
+  const v2 = '0.1.1-test.2.1';
+  const [pkg1, pkg2] = await Promise.all([
+    packageOpenGame(path.join(dir, 'dist-v1'), v1, undefined, { gamesRoot }),
+    packageOpenGame(path.join(dir, 'dist-v2'), v2, undefined, { gamesRoot }),
+  ]);
+
+  const home = path.join(dir, 'opengame-home');
+  const dataDir = path.join(dir, 'opengame-data');
+  const workbuddyDir = path.join(dir, 'workbuddy');
+  const claudeDir = path.join(dir, 'claude');
+  const dshHome = path.join(dir, 'dsh');
+  const genericSkillsDir = path.join(dir, 'generic-skills');
+  t.after(() => retireIdleBackend(dataDir).catch(() => {}));
+
+  // Pre-seed existing OpenMotion config & skills to prove zero collision / coexistence.
+  await mkdir(path.join(workbuddyDir, 'skills', 'openmotion-game'), { recursive: true });
+  await writeJSON(path.join(workbuddyDir, 'mcp.json'), {
+    mcpServers: { openmotion: { type: 'stdio', command: 'node', args: ['/existing/openmotion/run-mcp.mjs'] } },
+  });
+  await writeJSON(path.join(workbuddyDir, 'skills', 'openmotion-game', 'openmotion-install.json'), {
+    managedBy: '@openmotion/installer', installHome: '/existing/openmotion', host: 'workbuddy',
+  });
+  await writeFile(path.join(workbuddyDir, 'skills', 'openmotion-game', 'SKILL.md'), '---\nname: openmotion-game\n---\nKeep untouched\n');
+
+  // Fake DSH CLI that records plugin dependency into profile package.json.
+  const fakeDsh = path.join(dir, 'fake-dsh.mjs');
+  await writeFile(fakeDsh, `
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+const args = process.argv.slice(2);
+const profile = args[args.indexOf('--profile') + 1];
+const bundleDir = args[args.indexOf('add') + 1];
+const file = path.join(process.env.DSH_HOME, 'profiles', profile, 'package.json');
+await mkdir(path.dirname(file), { recursive: true });
+let pkg = {};
+try { pkg = JSON.parse(await readFile(file, 'utf8')); } catch {}
+const bundlePkg = JSON.parse(await readFile(path.join(bundleDir, 'package.json'), 'utf8'));
+pkg.dependencies = { ...(pkg.dependencies || {}), [bundlePkg.name]: 'file:' + bundleDir };
+await writeFile(file, JSON.stringify(pkg, null, 2));
+`);
+
+  await withEnv({ WORKBUDDY_CONFIG_DIR: workbuddyDir, CLAUDE_CONFIG_DIR: claudeDir, DSH_HOME: dshHome }, async () => {
+    // 1. Setup WorkBuddy, DeepSeek Harness, and generic Agent (opencode) against v1.
+    const wb = await setup({
+      manifest: pkg1.manifest, home, dataDirectory: dataDir, host: 'workbuddy',
+      installDeps: linkDeps, skipStudio: true, skipBackgroundPrepare: true,
+    });
+    assert.equal(wb.version, v1);
+    assert.equal(wb.current.healthy, true);
+
+    const wbConfig = JSON.parse(await readFile(path.join(workbuddyDir, 'mcp.json'), 'utf8'));
+    assert.deepEqual(wbConfig.mcpServers.openmotion, { type: 'stdio', command: 'node', args: ['/existing/openmotion/run-mcp.mjs'] }, 'OpenMotion MCP entry must remain untouched');
+    assert.equal(wbConfig.mcpServers.opengame.command, process.execPath);
+    assert.deepEqual(wbConfig.mcpServers.opengame.args, [path.join(home, 'run-mcp.mjs')]);
+    assert.equal(await readFile(path.join(workbuddyDir, 'skills', 'openmotion-game', 'SKILL.md'), 'utf8'), '---\nname: openmotion-game\n---\nKeep untouched\n');
+    const ogSkill = await readFile(path.join(workbuddyDir, 'skills', 'opengame-game', 'SKILL.md'), 'utf8');
+    assert.match(ogSkill, /^name: opengame-game$/m);
+    assert.match(ogSkill, /opengame_create/);
+
+    const dshRes = await setup({
+      manifest: pkg1.manifest, home, dataDirectory: dataDir, host: 'deepseek', profile: 'game-test', dsh: fakeDsh,
+      installDeps: linkDeps, skipStudio: true, skipBackgroundPrepare: true,
+    });
+    assert.equal(dshRes.hostInstallation.bundleDirectory, path.join(home, 'hosts', 'deepseek'));
+    assert.equal(existsSync(path.join(home, 'hosts', 'deepseek', 'skills', 'opengame-game', 'SKILL.md')), true);
+
+    const generic = await setup({
+      manifest: pkg1.manifest, home, dataDirectory: dataDir, host: 'opencode', skillsDirectory: genericSkillsDir,
+      installDeps: linkDeps, skipStudio: true, skipBackgroundPrepare: true,
+    });
+    assert.equal(generic.agentRegistration?.serverName, 'opengame');
+    assert.equal(existsSync(path.join(genericSkillsDir, 'opengame-game', 'SKILL.md')), true);
+
+    // 2. Diagnose & directAccess call against live stdio MCP.
+    const diag = await diagnose({ home, host: 'workbuddy' });
+    assert.equal(diag.status, 'passed', JSON.stringify(diag));
+    assert.equal(diag.serverInfo.name, 'opengame');
+    assert.equal(diag.version, v1);
+    assert.equal(diag.tools.length, 19);
+
+    const listed = await callInstalled({ home, host: 'workbuddy' });
+    assert.equal(listed.serverInfo.name, 'opengame');
+    assert.equal(listed.tools.length, 19);
+
+    // 3. Start local mock npm registries: primary returns 503, mirror serves valid v2 + corrupted v3.
+    const v2Bytes = await readFile(pkg2.installer);
+    const v2Integrity = await sriSha512(pkg2.installer);
+    const failingPrimary = createServer((_req, res) => { res.writeHead(503); res.end('unavailable'); });
+    const mirror = createServer((req, res) => {
+      if (req.url === '/opengame/test') {
+        const host = req.headers.host;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          name: 'opengame',
+          version: v2,
+          dist: { tarball: `http://${host}/tarballs/opengame-${v2}.tgz`, integrity: v2Integrity },
+        }));
+        return;
+      }
+      if (req.url === `/tarballs/opengame-${v2}.tgz`) {
+        res.writeHead(200, { 'Content-Type': 'application/gzip' });
+        res.end(v2Bytes);
+        return;
+      }
+      res.writeHead(404); res.end('not found');
+    });
+    await Promise.all([
+      new Promise<void>(resolve => failingPrimary.listen(0, '127.0.0.1', resolve)),
+      new Promise<void>(resolve => mirror.listen(0, '127.0.0.1', resolve)),
+    ]);
+    t.after(() => { failingPrimary.close(); mirror.close(); });
+    const primaryUrl = `http://127.0.0.1:${(failingPrimary.address() as any).port}`;
+    const mirrorUrl = `http://127.0.0.1:${(mirror.address() as any).port}`;
+
+    // 4. checkNpmUpdate falls back from primary (503) to mirror (200).
+    const check = await checkNpmUpdate({
+      packageName: 'opengame', channel: 'test', currentVersion: v1,
+      registries: [primaryUrl, mirrorUrl],
+    });
+    assert.equal(check.available, true);
+    assert.equal(check.version, v2);
+    assert.equal(check.registry, mirrorUrl);
+
+    // 5. Reject tampered integrity without modifying install.json.
+    await assert.rejects(
+      stageNpmUpdate({ home, target: { ...check, integrity: 'sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==' }, installDeps: linkDeps }),
+      /INTEGRITY_MISMATCH/,
+    );
+    assert.equal((await readInstallState(home)).staged, null);
+
+    // 6. Reject a package that fails live MCP handshake probe & record it in badVersions.
+    await assert.rejects(
+      stageNpmUpdate({
+        home,
+        target: check,
+        installDeps: linkDeps,
+        probeTransport: () => { throw new Error('SYNTHETIC_BROKEN_MCP'); },
+      }),
+      /UPDATE_PROBE_FAILED/,
+    );
+    const afterFailedProbe = await readInstallState(home);
+    assert.equal(afterFailedProbe.current.version, v1);
+    assert.equal(afterFailedProbe.staged, null);
+    assert(afterFailedProbe.badVersions.includes(v2));
+
+    // Clear badVersions so we can stage the valid v2 package next.
+    await writeInstallState(home, { ...afterFailedProbe, badVersions: [] });
+
+    // 7. Stage valid v2 (runs real live MCP handshake probe against v2!).
+    const staged = await stageNpmUpdate({ home, target: check, installDeps: linkDeps });
+    assert.equal(staged.status, 'staged');
+    assert.equal(staged.staged.version, v2);
+
+    // 8. Retire any real shared editor started during diagnose, then test standalone busy deferral + idle retire.
+    await retireIdleBackend(dataDir);
+    let mockBusy = true;
+    let retireCalled = false;
+    const mockBackend = createServer((req, res) => {
+      if (req.url === '/api/runtime/activity' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ service: 'motion-preview', version: v1, pid: process.pid, dataDirectory: dataDir, idle: !mockBusy, active: { exports: mockBusy ? 1 : 0, mediaJobs: 0, gameTrailers: 0, toolCalls: 0 } }));
+        return;
+      }
+      if (req.url === '/api/runtime/retire' && req.method === 'POST') {
+        if (mockBusy) { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ retired: false, busy: true })); return; }
+        retireCalled = true;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ retired: true, standalone: false }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+    await new Promise<void>(resolve => mockBackend.listen(0, '127.0.0.1', resolve));
+    t.after(() => mockBackend.close());
+    await mkdir(dataDir, { recursive: true });
+    await writeJSON(path.join(dataDir, 'preview.json'), { port: (mockBackend.address() as any).port, pid: process.pid, version: v1 });
+
+    const deferred = await applyStagedUpdate({ home });
+    assert.equal(deferred.applied, false);
+    assert.equal(deferred.reason, 'backend_busy');
+    assert.equal(retireCalled, false);
+    assert.equal((await readInstallState(home)).current.version, v1);
+
+    mockBusy = false;
+    const applied = await applyStagedUpdate({ home });
+    assert.equal(applied.applied, true);
+    assert.equal(applied.version, v2);
+    assert.equal(applied.previousVersion, v1);
+    assert.equal(retireCalled, true);
+
+    const activeV2 = await readInstallState(home);
+    assert.equal(activeV2.current.version, v2);
+    assert.equal(activeV2.current.healthy, false);
+    assert.equal(activeV2.current.crashCount, 0);
+    assert.equal(activeV2.previous.version, v1);
+    assert.equal(activeV2.staged, null);
+    // Verify Skills synced to v2 across WorkBuddy and DSH stable bundle.
+    const wbSkillMeta = JSON.parse(await readFile(path.join(workbuddyDir, 'skills', 'opengame-game', 'opengame-install.json'), 'utf8'));
+    assert.equal(wbSkillMeta.version, v2);
+    const dshScope = JSON.parse(await readFile(path.join(home, 'hosts', 'deepseek', 'scope.json'), 'utf8'));
+    assert.equal(dshScope.version, v2);
+
+    // 9. Clean exit (code 0) on stdin EOF does NOT count as a crash.
+    const initLine = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {} } }) + '\n';
+    const cleanRun = spawnSync(process.execPath, [path.join(home, 'run-mcp.mjs')], {
+      input: initLine,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, OPENMOTION_TELEMETRY: '0', OPENGAME_AUTO_UPDATE: '0', OPENGAME_HEALTHY_AFTER_MS: '60000' },
+    });
+    assert.equal(cleanRun.status, 0, cleanRun.stderr);
+    const cleanReply = JSON.parse(cleanRun.stdout.trim());
+    assert.equal(cleanReply.result.serverInfo.version, v2);
+    assert.equal((await readInstallState(home)).current.crashCount, 0);
+
+    // 10. Simulate crash loop in unverified v2: corrupt v2/mcp.ts so it exits 1 immediately.
+    const v2McpPath = path.join(activeV2.current.appRoot, 'mcp.ts');
+    const origV2Mcp = await readFile(v2McpPath, 'utf8');
+    await writeFile(v2McpPath, 'console.error("simulated broken update"); process.exit(1);\n');
+
+    // Crash #1 increments crashCount to 1, does not roll back yet.
+    const crash1 = spawnSync(process.execPath, [path.join(home, 'run-mcp.mjs')], {
+      input: initLine,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, OPENMOTION_TELEMETRY: '0', OPENGAME_AUTO_UPDATE: '0', OPENGAME_MAX_CRASHES: '2' },
+    });
+    assert.equal(crash1.status, 1);
+    const afterCrash1 = await readInstallState(home);
+    assert.equal(afterCrash1.current.version, v2);
+    assert.equal(afterCrash1.current.crashCount, 1);
+
+    // Crash #2 hits maxCrashes=2 -> auto-rolls back to v1, records v2 in badVersions, restores Skills,
+    // AND transparently replays buffered `initialize` on v1 so stdout returns a valid v1 response!
+    const crash2 = spawnSync(process.execPath, [path.join(home, 'run-mcp.mjs')], {
+      input: initLine,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, OPENMOTION_TELEMETRY: '0', OPENGAME_AUTO_UPDATE: '0', OPENGAME_MAX_CRASHES: '2' },
+    });
+    assert.equal(crash2.status, 0, crash2.stderr);
+    const recoveredReply = JSON.parse(crash2.stdout.trim());
+    assert.equal(recoveredReply.result.serverInfo.name, 'opengame');
+    assert.equal(recoveredReply.result.serverInfo.version, v1);
+
+    const rolledState = await readInstallState(home);
+    assert.equal(rolledState.current.version, v1);
+    assert.equal(rolledState.current.healthy, true);
+    assert.equal(rolledState.previous, null);
+    assert(rolledState.badVersions.includes(v2));
+    assert.equal(rolledState.lastRollback.reason, 'crash_loop');
+    const restoredSkillMeta = JSON.parse(await readFile(path.join(workbuddyDir, 'skills', 'opengame-game', 'opengame-install.json'), 'utf8'));
+    assert.equal(restoredSkillMeta.version, v1);
+
+    // Restore v2 mcp.ts and verify healthy promotion + pruning of obsolete versions + manual rollback.
+    await writeFile(v2McpPath, origV2Mcp);
+    await mkdir(path.join(home, 'apps', '0.0.1-obsolete'), { recursive: true });
+    await writeInstallState(home, {
+      ...rolledState,
+      badVersions: [],
+      previous: { ...rolledState.current, healthy: true, crashCount: 0 },
+      current: { version: v2, sha256: activeV2.current.sha256, appRoot: activeV2.current.appRoot, activatedAt: new Date().toISOString(), healthy: false, crashCount: 0 },
+    });
+    const healthyRun = spawnSync(process.execPath, [path.join(home, 'run-mcp.mjs')], {
+      input: initLine,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, OPENMOTION_TELEMETRY: '0', OPENGAME_AUTO_UPDATE: '0', OPENGAME_HEALTHY_AFTER_MS: '0' },
+    });
+    assert.equal(healthyRun.status, 0, healthyRun.stderr);
+    const promoted = await readInstallState(home);
+    assert.equal(promoted.current.healthy, true);
+    assert.equal(existsSync(path.join(home, 'apps', '0.0.1-obsolete')), false, 'Obsolete app versions should be pruned after healthy promotion');
+
+    const manual = await rollbackInstallation({ home, reason: 'manual', markBad: true });
+    assert.equal(manual.rolledBack, true);
+    assert.equal(manual.from, v2);
+    assert.equal(manual.to, v1);
+  });
+});
+
+test('server exposes loopback-only /api/runtime/activity and /api/runtime/retire for idle retirement', async t => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'opengame-retire-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let retiredFlag = false;
+  const running = await startServer(new WorkspaceStore(dir), 0, {
+    editor: false,
+    onRetire: () => { retiredFlag = true; },
+  });
+  t.after(() => running.close());
+  const port = (running.server.address() as { port: number }).port;
+  const base = `http://127.0.0.1:${port}`;
+
+  // Reject cross-origin requests.
+  const crossOrigin = await fetch(`${base}/api/runtime/activity`, { headers: { Origin: 'https://evil.example' } });
+  assert.equal(crossOrigin.status, 403);
+
+  const activityRes = await fetch(`${base}/api/runtime/activity`);
+  assert.equal(activityRes.status, 200);
+  const activity = await activityRes.json() as any;
+  assert.equal(activity.idle, true);
+  assert.equal(path.resolve(activity.dataDirectory), path.resolve(dir));
+  assert.deepEqual(activity.active, { exports: 0, mediaJobs: 0, gameTrailers: 0, toolCalls: 0 });
+
+  const retireRes = await fetch(`${base}/api/runtime/retire`, { method: 'POST' });
+  assert.equal(retireRes.status, 200);
+  const retireBody = await retireRes.json() as any;
+  assert.equal(retireBody.retired, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(retiredFlag, true);
+});
