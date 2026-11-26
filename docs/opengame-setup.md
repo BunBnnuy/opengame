@@ -4,7 +4,7 @@ This guide installs the `nexu-io/opengame` checkout and connects its game tools 
 
 ## Prerequisites
 
-- Git, npm and Node.js **26.11.1** (the CI version). `package.json` declares Node.js 22.18.0 or later.
+- Git, Git LFS, npm and Node.js **26.11.1** (the CI version). `package.json` declares Node.js 22.18.0 or later.
 - A local agent with stdio MCP support for AI-assisted creation. Browsing and playing bundled games does not require an agent connection.
 - Chrome/Chromium for automated game screenshots and play-tests. Video trailers additionally require FFmpeg/ffprobe and the prepared export runtime.
 - Media-provider credentials or an OpenDesign account only when using the corresponding generation or hosting services.
@@ -14,11 +14,12 @@ This guide installs the `nexu-io/opengame` checkout and connects its game tools 
 ```sh
 git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/nexu-io/opengame.git
 cd opengame
+git lfs install --local --skip-smudge
 npm ci
 npm run build:studio
 ```
 
-The clone command skips optional large LFS media. The game templates and the README screenshots are ordinary Git files. Optional video resources have separate [storage instructions](repository-storage.md).
+The shallow clone includes game source, catalog metadata, covers and the complete Tidebreaker game. Other templates keep binary assets in Git LFS. Studio and MCP fetch the selected template's assets on demand and reuse them in this checkout. To prepare a template for offline use, run `git lfs pull --include="templates/games/<game-id>/**" --exclude=""` from the checkout. Optional videos have separate [storage instructions](repository-storage.md).
 
 ## Start a separate workspace
 

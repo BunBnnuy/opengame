@@ -400,7 +400,7 @@ jobs:
         if: steps.scope.outputs.full == 'true'
         run: |
           # Hosted-catalog packaging tests also need the real template audio/font bytes.
-          git lfs pull --include="docs/readme/**,library/**,examples/**" --exclude=""
+          git lfs pull --include="docs/readme/**,library/**,examples/**,templates/games/**" --exclude=""
           npm run media:pull
       - name: Select rendering package cache version
         if: steps.scope.outputs.full == 'true'

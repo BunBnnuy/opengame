@@ -21,6 +21,7 @@ import type { Duplex } from 'node:stream';
 import { injectPreviewBridgeHtml, isValidPreviewBridgeToken } from './shared/preview-bridge.ts';
 import { attachmentDisposition } from './shared/http-header.ts';
 import { HostedGameTemplates } from './shared/hosted-game-templates.ts';
+import { lfsPointer } from './shared/repository-template-catalog.ts';
 import { zip } from './scripts/zip.mjs';
 import { escapeHtml } from './shared/scenario-content.ts';
 import { formatGameBriefPrompt, gameAssetInstructions, gameGenreLabels, gameGenres, gameStyles, gameSettings, isReadyBuiltInTemplate, type GameBrief, type GameCard, type GameCatalog, type GameCatalogIssue, type GameCreated, type GameHandoff, type GameRemixOptions, type RoomServerMessage, type GameTrailer, type GameTrailerStatus } from './shared/game-contract.ts';
@@ -1588,7 +1589,13 @@ server.listen(port, '127.0.0.1', () => {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || card.source !== 'template' || root !== card.dir) throw error;
       file = await safeFile(await this.hosted.directory(id, card.dir), relative);
     }
-    return { data: await readFile(file), mime: mime[path.extname(file).toLowerCase()] ?? 'application/octet-stream' };
+    let data = await readFile(file);
+    if (card.source === 'template' && root === card.dir && lfsPointer(data)) {
+      const directory = await this.hosted.directory(id, card.dir);
+      data = await readFile(await safeFile(directory, relative));
+      if (lfsPointer(data)) throw new GameError(`Missing Git LFS data for ${id}/${relative}`, 503);
+    }
+    return { data, mime: mime[path.extname(file).toLowerCase()] ?? 'application/octet-stream' };
   }
 }
 
