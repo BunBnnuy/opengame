@@ -14,10 +14,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  template-library:
-    name: Template library policy
+  checks:
+    name: Source checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout source and contribution history without LFS media
         uses: actions/checkout@v6.0.2
@@ -29,6 +29,13 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '26.11.1'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Select checks for the changed boundary
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node .github/scripts/ci-scope.mjs
       - name: Require Squash merges for sanitized media history
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,67 +54,15 @@ jobs:
           npm run storage:check -- --final-tree
           node --test tests/repository-storage.test.ts tests/media-transfer.test.ts
           node --test tests/template-library.test.ts tests/ci-scope.test.mjs
-
-  maintainability:
-    name: Maintainability report
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout PR merge result
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Setup pinned Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '26.11.1'
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            .github/maintainability/package-lock.json
-      - name: Select checks for the changed boundary
-        id: scope
+      - name: Install scanner
+        run: node .github/scripts/motion-scan.mjs install "$RUNNER_TEMP/scanner"
+      - name: Scan tracked source without publication credentials
+        run: node .github/scripts/motion-scan.mjs source . "$RUNNER_TEMP/source-scan.json" "$RUNNER_TEMP/scanner/gitleaks"
+      - name: Check presentation documentation
+        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.documents != '[]'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node .github/scripts/ci-scope.mjs
-      - name: Compare source against the PR base
-        if: steps.scope.outputs.maintainability == 'true'
-        shell: bash
-        env:
-          PR_HEAD_REVISION: ${{ github.event.pull_request.head.sha }}
-        run: |
-          test "$(git rev-parse HEAD^2)" = "$PR_HEAD_REVISION"
-          BASE_REVISION=$(git rev-parse HEAD^1)
-          base_dir=$(mktemp -d "$RUNNER_TEMP/motion-base.XXXXXX")
-          git archive "$BASE_REVISION" | tar -x -C "$base_dir"
-          npm ci --prefix "$base_dir" --ignore-scripts --no-audit --no-fund
-          npm ci --ignore-scripts --no-audit --no-fund
-          npm ci --prefix .github/maintainability --ignore-scripts --no-audit --no-fund
-          node .github/maintainability/report.mjs "$base_dir" "$BASE_REVISION" >> "$GITHUB_STEP_SUMMARY"
-
-  checks:
-    name: Source checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Setup pinned Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '26.11.1'
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Select checks for the changed boundary
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node .github/scripts/ci-scope.mjs
+          CHANGED_DOCS: ${{ steps.scope.outputs.documents }}
+        run: node .github/scripts/ci-scope.mjs --check-docs
       - name: Check template publication and source scanning
         run: |
           node --test tests/publish-template-catalog.test.mjs
@@ -153,6 +108,7 @@ jobs:
 
   platform-reliability:
     name: Workspace reliability (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -183,13 +139,13 @@ jobs:
         run: node --experimental-strip-types --test tests/process-lock.test.ts tests/version-reads.test.ts tests/capture-retry.test.ts tests/hyperframes-startup.test.ts tests/command-lifecycle.test.ts tests/windows-install-recovery.test.ts
 
   studio:
-    name: Studio regression (${{ matrix.shard }}/3)
+    name: Studio regression (${{ matrix.shard }}/2)
     env:
       OPENMOTION_TELEMETRY: '0'
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -214,140 +170,14 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Studio regression
         if: steps.scope.outputs.full == 'true'
-        run: npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/3
-
-  distribution-browser:
-    name: Browser regression (${{ matrix.suite }})
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: ${{ fromJSON(github.event_name == 'pull_request' && '["workspace"]' || '["workspace","transcript","export"]') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    defaults:
-      run:
-        shell: bash
-    env:
-      OPENMOTION_TELEMETRY: '0'
-      HYPERFRAMES_BROWSER_PATH: /usr/bin/google-chrome
-      HYPERFRAMES_FFMPEG_PATH: /usr/bin/ffmpeg
-      HYPERFRAMES_FFPROBE_PATH: /usr/bin/ffprobe
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          fetch-depth: 2
-      - name: Setup pinned Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '26.11.1'
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Select checks for the changed boundary
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node .github/scripts/ci-scope.mjs
-      - name: Identify optional LFS inputs
-        id: media-key
-        if: steps.scope.outputs.full == 'true'
-        run: echo "trees=$(git rev-parse HEAD:docs/readme HEAD:library HEAD:examples | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
-      - name: Cache optional LFS media
-        if: steps.scope.outputs.full == 'true'
-        uses: actions/cache@v4
-        with:
-          path: .git/lfs/objects
-          key: optional-lfs-${{ runner.os }}-${{ steps.media-key.outputs.trees }}
-          restore-keys: optional-lfs-${{ runner.os }}-
-      - name: Download regression media
-        if: steps.scope.outputs.full == 'true'
-        run: |
-          git lfs pull --include="docs/readme/**,library/**,examples/**" --exclude=""
-          npm run media:pull
-      - name: Select rendering package cache version
-        if: steps.scope.outputs.full == 'true'
-        id: rendering-cache
-        run: echo "version=${ImageVersion:-$(date -u +%G-W%V)}" >> "$GITHUB_OUTPUT"
-      - name: Restore rendering package downloads
-        if: steps.scope.outputs.full == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/motion-rendering-apt/*.deb
-          # Reuse packages across runs of the same runner image; refresh when the image changes.
-          key: rendering-apt-ubuntu24.04-${{ runner.arch }}-zip-unzip-ffmpeg-fonts-noto-core-v2-${{ steps.rendering-cache.outputs.version }}
-          restore-keys: |
-            rendering-apt-ubuntu24.04-${{ runner.arch }}-zip-unzip-ffmpeg-fonts-noto-core-v2-
-            rendering-apt-ubuntu24.04-${{ runner.arch }}-zip-unzip-ffmpeg-fonts-noto-core-
-      - name: Install rendering test tools
-        if: steps.scope.outputs.full == 'true'
-        run: |
-          # The hosted Ubuntu image provides Chrome; Ubuntu's chromium package pulls a desktop snap.
-          "$HYPERFRAMES_BROWSER_PATH" --version
-          missing=()
-          for package in zip unzip ffmpeg fonts-noto-core; do
-            if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" != 'install ok installed' ]; then
-              missing+=("$package")
-            fi
-          done
-          if ((${#missing[@]})); then
-            mkdir -p "$RUNNER_TEMP/motion-rendering-apt/partial"
-            apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
-              -o "Dir::Cache::archives=$RUNNER_TEMP/motion-rendering-apt" -o APT::Keep-Downloaded-Packages=true)
-            # Hosted runners already have package indexes. Refresh only if installation needs it.
-            if ! sudo apt-get "${apt_options[@]}" install -y --no-install-recommends "${missing[@]}"; then
-              sudo apt-get "${apt_options[@]}" update
-              sudo apt-get "${apt_options[@]}" install -y --no-install-recommends "${missing[@]}"
-            fi
-            du -sh "$RUNNER_TEMP/motion-rendering-apt/"*.deb
-          fi
-      - name: Install locked dependencies
-        if: steps.scope.outputs.full == 'true'
-        run: npm ci --no-audit --no-fund
-      - name: Build browser regression inputs
-        if: steps.scope.outputs.full == 'true'
-        run: |
-          npm run build:studio
-          npm run build:tracking
-      - name: Related template preview browser regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'workspace'
-        run: node --experimental-strip-types tests/related-template-preview-browser.mjs "$RUNNER_TEMP/related-template-preview"
-      - name: Transcript workflow browser regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'transcript'
-        run: node tests/transcript-browser.mjs "$RUNNER_TEMP/transcript-workflow"
-      - name: Video review comments and annotation regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'export'
-        timeout-minutes: 5
-        run: |
-          node --test tests/review-comments.test.ts
-          node --test tests/review-comments-browser.ts
-      - name: Platform export Studio and MCP end-to-end regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'export'
-        timeout-minutes: 10
-        run: |
-          node --test tests/platform-export.test.ts tests/caption-export.test.ts
-          node tests/platform-export-browser.mjs "$RUNNER_TEMP/platform-export"
-      - name: Brand Kit capture, package and showcase regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'transcript'
-        run: |
-          node --test tests/brand-catalog.test.ts tests/brand-cover.test.ts tests/brand-kits.test.ts
-          node --test tests/brand-extraction.browser.test.ts tests/brand-showcase.browser.test.ts
-      - name: Repository template runtime regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'workspace'
-        run: node --test tests/repository-template-runtime.test.ts tests/hosted-template-catalog.test.ts tests/template-guide.test.ts tests/template-prompts.test.ts tests/integration-setup.test.ts
-      - name: Workspace, wrapper and session regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'workspace'
-        timeout-minutes: 10
-        run: node --experimental-strip-types --test --test-concurrency=1 tests/spa-routes.test.ts tests/server.test.ts tests/projects.test.ts tests/sessions.test.ts tests/multi-project.test.ts tests/asset-naming.test.ts tests/history.test.ts
-      - name: Built-in template playback and export regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'workspace'
-        run: node --experimental-strip-types --test tests/decision-tree.test.ts
+        run: npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/2
 
   distribution:
     name: OpenGame regression (${{ matrix.suite }})
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(github.event_name == 'pull_request' && '["source","runtime"]' || '["source","runtime","rendering"]') }}
+        suite: ${{ fromJSON(github.event_name == 'pull_request' && '["runtime"]' || '["runtime","rendering","transcript","export"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
@@ -391,11 +221,11 @@ jobs:
           git lfs pull --include="docs/readme/**,library/**,examples/**" --exclude=""
           npm run media:pull
       - name: Select rendering package cache version
-        if: steps.scope.outputs.full == 'true' && matrix.suite != 'source'
+        if: steps.scope.outputs.full == 'true'
         id: rendering-cache
         run: echo "version=${ImageVersion:-$(date -u +%G-W%V)}" >> "$GITHUB_OUTPUT"
       - name: Restore rendering package downloads
-        if: steps.scope.outputs.full == 'true' && matrix.suite != 'source'
+        if: steps.scope.outputs.full == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/motion-rendering-apt/*.deb
@@ -405,7 +235,7 @@ jobs:
             rendering-apt-ubuntu24.04-${{ runner.arch }}-zip-unzip-ffmpeg-fonts-noto-core-v2-
             rendering-apt-ubuntu24.04-${{ runner.arch }}-zip-unzip-ffmpeg-fonts-noto-core-
       - name: Install rendering test tools
-        if: steps.scope.outputs.full == 'true' && matrix.suite != 'source'
+        if: steps.scope.outputs.full == 'true'
         run: |
           # The hosted Ubuntu image provides Chrome; Ubuntu's chromium package pulls a desktop snap.
           "$HYPERFRAMES_BROWSER_PATH" --version
@@ -426,17 +256,11 @@ jobs:
             fi
             du -sh "$RUNNER_TEMP/motion-rendering-apt/"*.deb
           fi
-      - name: Install scanner
-        if: matrix.suite == 'source'
-        run: node .github/scripts/motion-scan.mjs install "$RUNNER_TEMP/scanner"
-      - name: Scan tracked source without publication credentials
-        if: matrix.suite == 'source'
-        run: node .github/scripts/motion-scan.mjs source . "$RUNNER_TEMP/source-scan.json" "$RUNNER_TEMP/scanner/gitleaks"
       - name: Install locked dependencies
-        if: steps.scope.outputs.full == 'true' && matrix.suite != 'source'
+        if: steps.scope.outputs.full == 'true'
         run: npm ci --no-audit --no-fund
       - name: Build regression inputs
-        if: steps.scope.outputs.full == 'true' && matrix.suite != 'source'
+        if: steps.scope.outputs.full == 'true'
         run: |
           npm run build:studio
           npm run build:tracking
@@ -445,10 +269,6 @@ jobs:
         run: |
           node --test tests/design-system.test.ts
           node --experimental-strip-types --test tests/template-attribution.test.ts tests/tracking.test.ts tests/tracking-device.test.ts tests/studio-tracking.test.ts tests/mcp-tracking-host.test.ts tests/codex-session-tracking.test.ts tests/strategy-tracking-enrichment.test.ts
-      - name: Validate Design Studio projects and comment previews
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'rendering'
-        # Keep Chrome startup separate from the parallel installation and packaging tests.
-        run: node --experimental-strip-types --test --test-concurrency=1 tests/browser.test.ts tests/design-projects.test.ts
       - name: OpenGame runtime regression
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
         run: |
@@ -478,32 +298,64 @@ jobs:
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
         timeout-minutes: 2
         run: node --test tests/super-agent.test.ts
+      - name: Related template preview browser regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
+        run: node --experimental-strip-types tests/related-template-preview-browser.mjs "$RUNNER_TEMP/related-template-preview"
+      - name: Repository template runtime regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
+        run: node --test tests/repository-template-runtime.test.ts tests/hosted-template-catalog.test.ts tests/template-guide.test.ts tests/template-prompts.test.ts tests/integration-setup.test.ts
+      - name: Workspace, wrapper and session regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
+        timeout-minutes: 10
+        run: node --experimental-strip-types --test --test-concurrency=1 tests/spa-routes.test.ts tests/server.test.ts tests/projects.test.ts tests/sessions.test.ts tests/multi-project.test.ts tests/asset-naming.test.ts tests/history.test.ts
+      - name: Built-in template playback and export regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
+        run: node --experimental-strip-types --test tests/decision-tree.test.ts
+      - name: Validate Design Studio projects and comment previews
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'rendering'
+        # Keep Chrome startup separate from the parallel installation and packaging tests.
+        run: node --experimental-strip-types --test --test-concurrency=1 tests/browser.test.ts tests/design-projects.test.ts
       - name: Validate two-round inline rendering
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'rendering'
         run: node --experimental-strip-types --test --test-concurrency=1 tests/inline-video-runtime.test.ts
-      - name: Check presentation documentation
-        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.documents != '[]' && matrix.suite == 'source'
-        env:
-          CHANGED_DOCS: ${{ steps.scope.outputs.documents }}
-        run: node .github/scripts/ci-scope.mjs --check-docs
+      - name: Transcript workflow browser regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'transcript'
+        run: node tests/transcript-browser.mjs "$RUNNER_TEMP/transcript-workflow"
+      - name: Brand Kit capture, package and showcase regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'transcript'
+        run: |
+          node --test tests/brand-catalog.test.ts tests/brand-cover.test.ts tests/brand-kits.test.ts
+          node --test tests/brand-extraction.browser.test.ts tests/brand-showcase.browser.test.ts
+      - name: Video review comments and annotation regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'export'
+        timeout-minutes: 5
+        run: |
+          node --test tests/review-comments.test.ts
+          node --test tests/review-comments-browser.ts
+      - name: Platform export Studio and MCP end-to-end regression
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'export'
+        timeout-minutes: 10
+        run: |
+          node --test tests/platform-export.test.ts tests/caption-export.test.ts
+          node tests/platform-export-browser.mjs "$RUNNER_TEMP/platform-export"
 
   # Keep the existing required check while every independent lane runs in parallel.
   standalone:
     if: ${{ always() }}
-    needs: [template-library, maintainability, checks, platform-reliability, studio, distribution-browser, distribution]
+    needs: [checks, platform-reliability, studio, distribution]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every validation lane
         env:
           VALIDATION_RESULTS: ${{ toJSON(needs) }}
-          ALLOW_SKIPPED_MAINTAINABILITY: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' }}
+          ALLOW_SKIPPED_PLATFORM: ${{ github.event_name == 'pull_request' }}
         run: |
           node --input-type=module <<'NODE'
           const results = JSON.parse(process.env.VALIDATION_RESULTS);
-          for (const job of ['template-library', 'maintainability', 'checks', 'platform-reliability', 'studio', 'distribution-browser', 'distribution']) {
+          for (const job of ['checks', 'platform-reliability', 'studio', 'distribution']) {
             const result = results[job]?.result;
-            const expected = job === 'maintainability' && process.env.ALLOW_SKIPPED_MAINTAINABILITY === 'true'
+            const expected = job === 'platform-reliability' && process.env.ALLOW_SKIPPED_PLATFORM === 'true'
               ? 'skipped' : 'success';
             if (result !== expected) {
               console.error(`${job}: expected ${expected}, received ${result ?? 'missing'}`);

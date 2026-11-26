@@ -104,20 +104,28 @@ const stepBody = (job, name) => job.split(`      - name: ${name}\n`)[1].split(' 
 
 test('OpenGame CI covers source and runtime regressions independently of OpenMotion releases', async () => {
   const ci = await readFile(ciPath, 'utf8');
+  const checks = jobBody(ci, 'checks');
+  const studio = jobBody(ci, 'studio');
   const distribution = jobBody(ci, 'distribution');
-  const distributionBrowser = jobBody(ci, 'distribution-browser');
+  const platformReliability = jobBody(ci, 'platform-reliability');
   const motionRelease = await readFile(new URL('../.github/workflows/motion-release-checks.yml', import.meta.url), 'utf8');
+  const dshIntegration = await readFile(new URL('../.github/workflows/dsh-integration.yml', import.meta.url), 'utf8');
   assert(jobBody(motionRelease, 'controls').includes("if: github.repository == 'nexu-io/openmotion'"));
-  assert.equal(stepBody(distribution, 'Scan tracked source without publication credentials').trimStart().split('\n')[0], "if: matrix.suite == 'source'");
+  assert(jobBody(dshIntegration, 'plugin').includes("if: github.repository == 'nexu-io/openmotion'"));
+  assert(!ci.includes('\n  maintainability:\n'), 'Advisory maintainability job should not consume a PR runner');
+  assert(!ci.includes('\n  distribution-browser:\n'), 'Workspace browser regression shares setup with distribution');
+  assert(!ci.includes('\n  template-library:\n'), 'Template policy checks run inside Source checks without an extra runner');
+  assert(platformReliability.includes("if: github.event_name != 'pull_request'"));
+  assert(!stepBody(checks, 'Scan tracked source without publication credentials').includes('if:'));
+  assert(!checks.includes('lfs pull'), 'Source checks must not download LFS media');
   for (const command of ['scripts/package-npm.mjs', 'scripts/test-package.mjs', 'tests/npm-package.test.ts',
     'tests/packaged-game-download.mjs', 'tests/npm-installer.test.ts', 'tests/install-guide.test.ts', 'tests/stable-release.test.mjs']) {
     assert(!runCommands(ci).includes(command), `OpenGame CI must not validate the OpenMotion installer: ${command}`);
   }
   assert(!distribution.includes('npm run test:studio'));
-  assert(stepBody(distribution, 'Check presentation documentation').includes('ci-scope.mjs --check-docs'));
-  const checks = jobBody(ci, 'checks');
-  const studio = jobBody(ci, 'studio');
-  for (const lane of [checks, studio]) {
+  assert(stepBody(checks, 'Check presentation documentation').includes('ci-scope.mjs --check-docs'));
+  assert(stepBody(checks, 'Check the final merge tree and media policy').includes('tests/ci-scope.test.mjs'));
+  for (const lane of [checks, studio, distribution]) {
     assert(!lane.includes('    needs:'), 'Independent lanes start without waiting for scope detection');
     assert(lane.includes('run: node .github/scripts/ci-scope.mjs'));
     assert(stepBody(lane, 'Install locked dependencies').includes("steps.scope.outputs.full == 'true'"));
@@ -133,50 +141,43 @@ test('OpenGame CI covers source and runtime regressions independently of OpenMot
   assert(stepBody(distribution, 'Validate two-round inline rendering').includes('tests/inline-video-runtime.test.ts'));
   assert(!distribution.includes('npm run design:test'));
   for (const name of ['Related template preview browser regression', 'Transcript workflow browser regression',
-    'Platform export Studio and MCP end-to-end regression', 'Brand Kit capture, package and showcase regression',
-    'Repository template runtime regression', 'Workspace, wrapper and session regression',
-    'Built-in template playback and export regression']) {
-    assert(stepBody(distributionBrowser, name).includes("steps.scope.outputs.full == 'true'"), name);
-    assert(!distribution.includes(`- name: ${name}`), `${name} must not remain serialized behind packaging`);
+    'Video review comments and annotation regression', 'Platform export Studio and MCP end-to-end regression',
+    'Brand Kit capture, package and showcase regression', 'Repository template runtime regression',
+    'Workspace, wrapper and session regression', 'Built-in template playback and export regression']) {
+    assert(stepBody(distribution, name).includes("steps.scope.outputs.full == 'true'"), name);
   }
-  const browserBuild = stepBody(distributionBrowser, 'Build browser regression inputs');
-  assert(browserBuild.includes('npm run build:studio') && browserBuild.includes('npm run build:tracking'));
-  assert(!distributionBrowser.includes('    needs:'), 'Browser regression starts independently of packaging');
+  const regressionBuild = stepBody(distribution, 'Build regression inputs');
+  assert(regressionBuild.includes('npm run build:studio') && regressionBuild.includes('npm run build:tracking'));
   assert(stepBody(distribution, 'Validate tracking').includes('node --test tests/design-system.test.ts'));
-  for (const [lane, expectedPR, expectedExtra] of [
-    [distribution, ['source', 'runtime'], ['rendering']],
-    [distributionBrowser, ['workspace'], ['transcript', 'export']],
-  ]) {
-    const matrix = lane.match(/suite: \$\{\{ fromJSON\(github.event_name == 'pull_request' && '([^']+)' \|\| '([^']+)'\) \}\}/);
-    const suites = JSON.parse(matrix[2]);
-    assert.deepEqual(JSON.parse(matrix[1]), expectedPR);
-    assert.deepEqual(suites, [...expectedPR, ...expectedExtra]);
-    for (const [, suite] of lane.matchAll(/matrix\.suite == '([\w-]+)'/g)) assert(suites.includes(suite), `Unknown suite: ${suite}`);
-    assert(lane.includes('fail-fast: false'));
-  }
+  const matrix = distribution.match(/suite: \$\{\{ fromJSON\(github\.event_name == 'pull_request' && '([^']+)' \|\| '([^']+)'\) \}\}/);
+  const suites = JSON.parse(matrix[2]);
+  assert.deepEqual(JSON.parse(matrix[1]), ['runtime']);
+  assert.deepEqual(suites, ['runtime', 'rendering', 'transcript', 'export']);
+  for (const [, suite] of distribution.matchAll(/matrix\.suite == '([\w-]+)'/g)) assert(suites.includes(suite), `Unknown suite: ${suite}`);
+  assert(distribution.includes('fail-fast: false'));
   assert(stepBody(distribution, 'Super Agent regression').includes("matrix.suite == 'runtime'"));
-  assert(stepBody(distributionBrowser, 'Workspace, wrapper and session regression').includes("matrix.suite == 'workspace'"));
-  assert(studio.includes('shard: [1, 2, 3]'));
+  assert(stepBody(distribution, 'Workspace, wrapper and session regression').includes("matrix.suite == 'runtime'"));
+  assert(studio.includes('shard: [1, 2]'));
   assert(studio.includes('fail-fast: false'));
   const studioStep = stepBody(studio, 'Studio regression');
   assert(studioStep.includes("steps.scope.outputs.full == 'true'"));
-  assert(studioStep.includes('npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/3'));
+  assert(studioStep.includes('npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/2'));
   assert(!studio.includes('lfs pull'));
   assert(!studio.includes('apt-get'));
 });
 
 test('the existing standalone gate rejects failed, cancelled, skipped and missing lanes', async () => {
   const gate = jobBody(await readFile(ciPath, 'utf8'), 'standalone');
-  const jobs = ['template-library', 'maintainability', 'checks', 'platform-reliability', 'studio', 'distribution-browser', 'distribution'];
+  const jobs = ['checks', 'platform-reliability', 'studio', 'distribution'];
   assert(gate.includes('if: ${{ always() }}'));
   assert(gate.includes(`needs: [${jobs.join(', ')}]`));
   assert(gate.includes('VALIDATION_RESULTS: ${{ toJSON(needs) }}'));
-  assert(gate.includes("ALLOW_SKIPPED_MAINTAINABILITY: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' }}"));
+  assert(gate.includes("ALLOW_SKIPPED_PLATFORM: ${{ github.event_name == 'pull_request' }}"));
   const script = gate.split("node --input-type=module <<'NODE'\n")[1].split('          NODE')[0];
   const success = Object.fromEntries(jobs.map(job => [job, { result: 'success' }]));
   const run = (results, allowSkipped = false) => spawnSync(process.execPath, ['--input-type=module'], {
     input: script, encoding: 'utf8',
-    env: { ...process.env, VALIDATION_RESULTS: JSON.stringify(results), ALLOW_SKIPPED_MAINTAINABILITY: String(allowSkipped) },
+    env: { ...process.env, VALIDATION_RESULTS: JSON.stringify(results), ALLOW_SKIPPED_PLATFORM: String(allowSkipped) },
   });
   assert.equal(run(success).status, 0);
   for (const job of jobs) {
@@ -187,18 +188,19 @@ test('the existing standalone gate rejects failed, cancelled, skipped and missin
       assert(rejected.stderr.includes(job));
     }
   }
-  const manual = { ...success, maintainability: { result: 'skipped' } };
-  assert.equal(run(manual, true).status, 0, 'Non-main-PR events intentionally skip maintainability');
+  const pr = { ...success, 'platform-reliability': { result: 'skipped' } };
+  assert.equal(run(pr, true).status, 0, 'Pull requests intentionally skip macOS/Windows platform reliability');
   for (const result of ['failure', 'cancelled', undefined]) {
-    assert.equal(run({ ...manual, maintainability: { result } }, true).status, 1);
+    assert.equal(run({ ...pr, 'platform-reliability': { result } }, true).status, 1);
   }
-  assert.equal(run({ ...manual, studio: { result: 'skipped' } }, true).status, 1);
+  assert.equal(run({ ...pr, studio: { result: 'skipped' } }, true).status, 1);
 });
 
 // Root test files without an OpenGame workflow command.
 const unscheduledSuites = [
   'asset-routing.test.ts', 'assets-use.test.ts', 'brand-story-tracking.test.ts', 'bundled-npm-runtime.test.ts',
-  'codex-host-handoff.test.ts', 'cold-start.test.ts', 'final-video-delivery.test.ts', 'final-video-ui.test.ts',
+  'codex-host-handoff.test.ts', 'cold-start.test.ts', 'dsh-distribution.test.ts', 'dsh-integration.test.ts',
+  'dsh-release.test.ts', 'dsh-template-cards.test.ts', 'final-video-delivery.test.ts', 'final-video-ui.test.ts',
   'game-harness-generalization.test.ts', 'game-projects.test.ts', 'hosted-game-templates.test.ts',
   'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-guide.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
   'legacy.test.ts', 'library-skill-catalog.test.ts', 'lint.test.ts', 'mcp-client.test.ts', 'mcp-config.test.ts', 'mcp.test.ts', 'media-save.test.ts',
