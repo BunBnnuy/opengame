@@ -30,7 +30,7 @@ import {
   toolResultFields,
 } from '../tracking/tool-fields.ts';
 import { defaultCapabilities } from '../shared/capability-registry.ts';
-import { withErrorMeta } from '../gateway/network.ts';
+import { ProviderError, withErrorMeta } from '../gateway/network.ts';
 import type { HostContext } from '../tracking/host.ts';
 import { ModelGateway } from '../gateway/service.ts';
 import { Phase1Service } from '../phase1.ts';
@@ -1068,6 +1068,18 @@ test('Media tracking review regressions: storage PUT 403, Cloud entitlement 403,
   assert.equal(unknown403Res?.properties.upstream_error_code, 'other');
   assert.equal(unknown403Res?.properties.error_code, 'PROVIDER_ERROR');
   assert.equal(unknown403Res?.properties.error_category, 'upstream_error');
+  assert.equal(
+    mediaGenerationError(new ProviderError('Your OpenDesign sign-in was rejected.', 403, 'invalid_token')),
+    'AUTH_REJECTED',
+  );
+  assert.equal(
+    mediaGenerationError(new ProviderError('Provider HTTP 403: credentials or permissions rejected', 403, 'provider_error')),
+    'AUTH_REJECTED',
+  );
+  assert.equal(
+    mediaGenerationError(new ProviderError('HTTP 403 Forbidden: content policy violation', 403, 'content_policy_violation')),
+    'PROVIDER_ERROR',
+  );
   assert.doesNotMatch(JSON.stringify(events), /caller-secret-token-slug|model_region_blocked_xyz/);
 
   // Assert video /content 403 + video params + queued-resume cancel

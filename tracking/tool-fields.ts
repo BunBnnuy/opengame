@@ -338,9 +338,24 @@ export function mediaGenerationError(error: unknown, phase?: string): MediaGener
   if (phase === 'remote_task') return 'REMOTE_FAILED';
   if (lower.includes('plan does not include') || lower.includes('upgrade your plan')) return 'PLAN_NOT_ENTITLED';
   if (lower.includes('balance') || lower.includes('credit') || lower.includes('insufficient') || lower.includes('quota') || lower.includes('entitlement')) return 'BALANCE_LOW';
+  const decisiveNonAuthCode = upstreamCode === 'content_policy_violation'
+    || upstreamCode === 'safety_blocked'
+    || upstreamCode === 'cancelled';
+  const genericApi403Message = status === 403 && lower === 'provider http 403: credentials or permissions rejected';
+  const allowGeneric403Auth = !upstreamCode || upstreamCode === 'provider_error' || upstreamCode === 'internal_error' || upstreamCode === 'service_unavailable' || upstreamCode === 'request_state_unknown';
   if (
-    !upstreamCode
-    && (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key') || lower.includes('credentials') || lower.includes('personal engine key') || lower.includes('sign-in is no longer accepted') || lower.includes('sign-in was rejected'))
+    !decisiveNonAuthCode
+    && (
+      lower.includes('401')
+      || lower.includes('unauthorized')
+      || lower.includes('api key')
+      || lower.includes('personal engine key')
+      || lower.includes('sign-in is no longer accepted')
+      || lower.includes('sign-in was rejected')
+      || (genericApi403Message
+        ? allowGeneric403Auth
+        : ((!upstreamCode && lower.includes('403')) || lower.includes('forbidden') || lower.includes('credentials')))
+    )
   ) return 'AUTH_REJECTED';
   if (lower.includes('429') || lower.includes('rate limit') || lower.includes('concurrency limit')) return 'RATE_LIMITED';
   if (lower.includes('configuration changed') || lower.includes('origin changed') || lower.includes('account changed')) return 'CONFIG_CHANGED';
