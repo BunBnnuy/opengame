@@ -146,4 +146,37 @@ describe('OpenGame monetization attribution & gate hooks', () => {
     expect(document.querySelector('[data-testid="concurrency-gate-dialog"]')).toBeNull();
     expect(tracked().some(item => item.event === 'ui_click' && item.properties.element === 'close_modal' && item.properties.hook_id === 'concurrency_gate_upgrade')).toBe(true);
   });
+
+  it('invokes onRecovered once when balance increases after checkout check', async () => {
+    const { gatewayRequest } = await import('../gatewayClient');
+    const mockGateway = vi.mocked(gatewayRequest);
+    mockGateway
+      .mockResolvedValueOnce({ state: 'signed-in', plan: 'plus', balance: '0.00', billingUnavailable: false })
+      .mockResolvedValueOnce({ state: 'signed-in', plan: 'plus', balance: '10.00', billingUnavailable: false });
+
+    const onRecovered = vi.fn();
+    await act(async () => {
+      root.render(<I18nProvider initialLocale="en"><MonetizationGateModal /></I18nProvider>);
+    });
+    await act(async () => {
+      openBalanceGate({ reason: 'insufficient_balance', onRecovered });
+      await Promise.resolve();
+    });
+
+    const cta = document.querySelector<HTMLAnchorElement>('[data-testid="monetization-gate-cta"]')!;
+    cta.addEventListener('click', event => event.preventDefault());
+    await act(async () => {
+      cta.click();
+    });
+
+    const checkBtn = document.querySelector<HTMLButtonElement>('.om-mg-inline-btn')!;
+    expect(checkBtn).not.toBeNull();
+    await act(async () => {
+      checkBtn.click();
+      await Promise.resolve();
+    });
+
+    expect(onRecovered).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-testid="monetization-gate-recovered"]')).not.toBeNull();
+  });
 });

@@ -72,6 +72,7 @@ export function MonetizationGateModal() {
   const pollAttemptsRef = useRef(0);
   const checkInFlightRef = useRef(false);
   const lastReturnCheckAtRef = useRef(0);
+  const recoveredNotifiedRef = useRef(false);
   const activeGateRef = useRef<MonetizationGateRequest | null>(null);
   activeGateRef.current = gate;
 
@@ -95,6 +96,7 @@ export function MonetizationGateModal() {
     setEntryId(nextEntryId);
     setPolling(false);
     setRecovered(false);
+    recoveredNotifiedRef.current = false;
     pollAttemptsRef.current = 0;
 
     const hookId = gateHookId(gate.kind);
@@ -133,6 +135,10 @@ export function MonetizationGateModal() {
       if (improved) {
         setPolling(false);
         setRecovered(true);
+        if (!recoveredNotifiedRef.current) {
+          recoveredNotifiedRef.current = true;
+          void Promise.resolve(current.onRecovered?.()).catch(() => {});
+        }
         window.setTimeout(() => closeMonetizationGate(), 900);
       }
     } catch {
