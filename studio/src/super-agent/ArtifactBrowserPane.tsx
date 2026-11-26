@@ -418,7 +418,24 @@ function ProjectPreviewCodeView({
   const localIframeRef = useRef<HTMLIFrameElement | null>(null);
   const effectiveIframeRef = iframeRef ?? localIframeRef;
   const sourceReady = useDeferredIframeSource(effectiveIframeRef, frameKey, hasFrameSource);
-  const frameLoaded = hasFrameSource && sourceReady && loadedFrameIdentity === frameIdentity;
+  const [startup, setStartup] = useState<{ frame: string; state: 'loading' | 'ready' | 'failed' } | null>(null);
+  const startupState = startup?.frame === frameIdentity ? startup.state : undefined;
+  useEffect(() => {
+    if (!hasFrameSource || !previewUrl.startsWith('/motion-api/games/')) return;
+    const onStartup = (event: MessageEvent) => {
+      if (!effectiveIframeRef.current || event.source !== effectiveIframeRef.current.contentWindow || event.data?.type !== 'opengame:startup') return;
+      const state = event.data.state;
+      if (state === 'loading' || state === 'ready' || state === 'failed') setStartup({ frame: frameIdentity, state });
+    };
+    window.addEventListener('message', onStartup);
+    return () => window.removeEventListener('message', onStartup);
+  }, [hasFrameSource, frameIdentity, effectiveIframeRef, previewUrl]);
+  useEffect(() => {
+    if (startupState !== 'loading') return;
+    const timer = window.setTimeout(() => setStartup({ frame: frameIdentity, state: 'failed' }), 120_000);
+    return () => window.clearTimeout(timer);
+  }, [frameIdentity, startupState]);
+  const frameLoaded = hasFrameSource && sourceReady && loadedFrameIdentity === frameIdentity && startupState !== 'loading' && startupState !== 'failed';
   const frameRevealTimedOut = hasFrameSource && revealedFrameIdentity === frameIdentity;
 
   useEffect(() => {
@@ -632,11 +649,21 @@ function ProjectPreviewCodeView({
           <div
             className="om-sa-frame-skeleton"
             data-game-loading={loadingBrand || undefined}
+            data-game-failed={startupState === 'failed' || undefined}
             role={loadingBrand ? 'status' : undefined}
             aria-label={loadingBrand ? t('Loading game…') : undefined}
             aria-hidden={loadingBrand ? undefined : true}
           >
-            {loadingBrand ? (
+            {startupState === 'failed' ? (
+              <>
+                <span>{t('This game could not be loaded.')}</span>
+                <Button variant="secondary" onClick={() => {
+                  setStartup(null);
+                  setLoadedFrameIdentity(null);
+                  if (effectiveIframeRef.current) effectiveIframeRef.current.src = previewUrl;
+                }}>{t('Retry')}</Button>
+              </>
+            ) : loadingBrand ? (
               <OpenDesignLoadingMark height={26} />
             ) : (
               <Skeleton style={{ width: '100%', height: '100%' }} />
@@ -974,6 +1001,7 @@ function GameProjectArtifactView({
   communityMatch,
   isTrial,
   chatId,
+  chatRunning,
   mode,
   viewport,
   reloadKey,
@@ -994,6 +1022,7 @@ function GameProjectArtifactView({
   communityMatch?: GameCard;
   isTrial: boolean;
   chatId: string | null;
+  chatRunning?: boolean;
   mode: 'preview' | 'code' | 'trailer';
   viewport: DesignViewportId;
   reloadKey: number;
@@ -1006,7 +1035,12 @@ function GameProjectArtifactView({
   onSubmitAnnotation: (payload: BrowserAnnotationSubmitPayload, sendImmediately: boolean) => Promise<void>;
   onCloseAnnotate: () => void;
   onNotify?: (message: string, tone?: 'info' | 'error') => void;
-  onGameMeta?: (meta: { trailerUrl: string | null; source: GameCard['source'] | null; multiplayer: boolean }) => void;
+  onGameMeta?: (meta: {
+    trailerUrl: string | null;
+    source: GameCard['source'] | null;
+    multiplayer: boolean;
+    orientation?: GameCard['orientation'];
+  }) => void;
   onBackgroundLoadingChange?: (loading: boolean) => void;
 }) {
   const { t } = useI18n();
@@ -1025,7 +1059,12 @@ function GameProjectArtifactView({
     setCopiedHandoff(false);
     setHandoffText(projectId ? storedInstruction(projectId) : null);
     if (!projectId) {
-      onGameMeta?.({ trailerUrl: null, source: communityMatch ? 'community' : null, multiplayer: communityMatch?.multiplayer === true });
+      onGameMeta?.({
+        trailerUrl: null,
+        source: communityMatch ? 'community' : null,
+        multiplayer: communityMatch?.multiplayer === true,
+        orientation: communityMatch?.orientation,
+      });
       return;
     }
     let cancelled = false;
@@ -1042,11 +1081,17 @@ function GameProjectArtifactView({
           trailerUrl,
           source: found?.source ?? (bundledMatch ? 'template' : 'mine'),
           multiplayer: (found ?? bundledMatch)?.multiplayer === true,
+          orientation: (found ?? bundledMatch)?.orientation,
         });
       })
       .catch(() => {
         if (cancelled) return;
-        onGameMeta?.({ trailerUrl: null, source: bundledMatch ? 'template' : 'mine', multiplayer: bundledMatch?.multiplayer === true });
+        onGameMeta?.({
+          trailerUrl: null,
+          source: bundledMatch ? 'template' : 'mine',
+          multiplayer: bundledMatch?.multiplayer === true,
+          orientation: bundledMatch?.orientation,
+        });
         if (bundledMatch) {
           void playableUrl(bundledMatch).then(next => {
             if (cancelled) {
@@ -1069,7 +1114,12 @@ function GameProjectArtifactView({
     && gameMeta?.source === 'mine'
     && (gameMeta.status === 'draft' || gameMeta.status === 'failed'),
   );
-  const isBuilding = Boolean(projectId && gameMeta?.source === 'mine' && gameMeta.status === 'building');
+  const isBuilding = Boolean(
+    projectId
+    && gameMeta?.source === 'mine'
+    && gameMeta.status === 'building'
+    && (chatId ? chatRunning === true : true),
+  );
   const isMultiplayer = gameMeta?.multiplayer === true || isMultiplayerGameArtifact(artifact);
 
   useEffect(() => {
@@ -1098,7 +1148,7 @@ function GameProjectArtifactView({
     if (bundledBlobUrl) return bundledBlobUrl;
     if (projectId) {
       const presentedParam = artifact.presentedAt ? `&p=${artifact.presentedAt}` : '';
-      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}&omViewportGuard=1`;
+      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}&gameStartup=1&omViewportGuard=1`;
     }
     return artifact.url || '';
   }, [bundledBlobUrl, projectId, artifact.url, artifact.revision, artifact.presentedAt, reloadKey]);
@@ -1796,6 +1846,7 @@ function ImageArtifactView({ url, title }: { url: string; title: string }) {
 export function ArtifactBrowserPane({
   active = true,
   chatId,
+  chatRunning,
   workingDir,
   artifacts,
   openTabIds,
@@ -1829,6 +1880,7 @@ export function ArtifactBrowserPane({
 }: {
   active?: boolean;
   chatId: string | null;
+  chatRunning?: boolean;
   workingDir?: string;
   artifacts: SuperAgentArtifact[];
   openTabIds: string[];
@@ -1868,9 +1920,11 @@ export function ArtifactBrowserPane({
     trailerUrl: string | null;
     source: GameCard['source'] | null;
     multiplayer: boolean;
+    orientation?: GameCard['orientation'];
   } | null>(null);
   const [gameFrameBackgroundLoading, setGameFrameBackgroundLoading] = useState(false);
   const [viewport, setViewport] = useState<DesignViewportId>('desktop');
+  const userChoseViewportForArtifactRef = useRef<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [webStateEntry, setWebStateEntry] = useState<{ artifactId: string; state: WebPageState } | null>(null);
   const [addressDraft, setAddressDraft] = useState('');
@@ -1952,6 +2006,7 @@ export function ArtifactBrowserPane({
     const artifactChanged = prevArtifactIdRef.current !== activeArtifact?.id;
     prevArtifactIdRef.current = activeArtifact?.id;
     if (artifactChanged) {
+      userChoseViewportForArtifactRef.current = null;
       setWebStateEntry(prev => (prev && prev.artifactId === activeArtifact?.id ? prev : null));
       setAddressEditing(false);
       setPendingWebUrl(null);
@@ -1981,9 +2036,19 @@ export function ArtifactBrowserPane({
       else setViewport('desktop');
     } else if (activeArtifact.kind === 'game-project') {
       setViewMode(keepingCodeTarget && !isGameTrial ? 'code' : 'preview');
-      setViewport(!isGameTrial && activeArtifact.scenario === 'portrait' ? 'mobile' : 'desktop');
+      const isPortraitGame = activeArtifact.scenario === 'portrait' || bundledMatch?.orientation === 'portrait';
+      setViewport(isPortraitGame ? 'mobile' : 'desktop');
     }
   }, [activeArtifact?.id]);
+
+  // Apply portrait viewport once catalog metadata resolves for game artifacts that omitted scenario.
+  useEffect(() => {
+    if (activeArtifact?.kind !== 'game-project') return;
+    if (activeArtifact.scenario || bundledMatch?.orientation) return;
+    if (!gameMeta?.orientation) return;
+    if (userChoseViewportForArtifactRef.current === activeArtifact.id) return;
+    setViewport(gameMeta.orientation === 'portrait' ? 'mobile' : 'desktop');
+  }, [activeArtifact?.id, activeArtifact?.kind, activeArtifact?.scenario, bundledMatch?.orientation, gameMeta?.orientation]);
 
   useEffect(() => {
     if (!pendingCodeFile || !activeArtifact || pendingCodeFile.artifactId !== activeArtifact.id) return;
@@ -2921,6 +2986,7 @@ export function ArtifactBrowserPane({
                                 className="om-sa-device-menu-item"
                                 data-active={isActive || undefined}
                                 onClick={() => {
+                                  userChoseViewportForArtifactRef.current = activeArtifact?.id ?? null;
                                   setViewport(preset.id);
                                   setDeviceMenuOpen(false);
                                 }}
@@ -3710,6 +3776,7 @@ export function ArtifactBrowserPane({
                 communityMatch={communityMatch}
                 isTrial={isGameTrial}
                 chatId={chatId}
+                chatRunning={chatRunning}
                 mode={isGameTrial ? 'preview' : viewMode}
                 viewport={viewport}
                 reloadKey={reloadKey}

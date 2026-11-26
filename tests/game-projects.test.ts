@@ -1569,6 +1569,32 @@ test('built-in published template remixes keep a clean title and emit dual-path 
   assert.match(ownRemix.agentInstruction,/Use the openmotion-game Skill to remix game/);
 }));
 
+test('3D briefs auto-infer style "3d" and scaffold vendored Three.js unless negated or overridden',()=>fixture(async(_,workspace)=>{
+  const {service}=await fakeKits(workspace);
+  for (const prompt of ['雨夜古刹 3D 第三人称武侠 Boss 战', '三维机甲格斗竞技场', 'Three.js desert rally racer', 'Volcano 3D survival runner', 'Piano 3D rhythm stage', 'no 3ds Max, use Three.js']) {
+    const {game}=await service.create({prompt,genre:'casual',style:null,setting:null,multiplayer:false});
+    assert.equal(game.style,'3d',prompt);
+    assert.equal((await service.read(game.id,'vendor/three.module.min.js')).content,'// local three',prompt);
+  }
+  for (const negatedPrompt of [
+    '不要3D，做2D像素横版闯关',
+    '不要用3D，做一个2D平台跳跃游戏',
+    'avoid 3D, keep it flat 2D',
+    'without 3D effects',
+    'no WebGL, use Canvas 2D',
+    'skip 3D and stay top-down',
+    "don't use 3D rendering",
+  ]) {
+    const negated=await service.create({prompt:negatedPrompt,genre:'platformer',style:null,setting:null,multiplayer:false});
+    assert.equal(negated.game.style,null,negatedPrompt);
+    await assert.rejects(service.read(negated.game.id,'vendor/three.module.min.js'),/ENOENT/);
+  }
+
+  const explicit=await service.create({prompt:'Retro 3D-inspired pixel racer',genre:'racing',style:'pixel',setting:null,multiplayer:false});
+  assert.equal(explicit.game.style,'pixel');
+  await assert.rejects(service.read(explicit.game.id,'vendor/three.module.min.js'),/ENOENT/);
+}));
+
 test('gameHttp injects viewport guard only for iframe/guarded requests and keeps raw source untouched',()=>fixture(async(service,workspace)=>{
   const {game}=await service.create(brief);
   const rawHtml='<!doctype html><html><head><title>Guard Test</title></head><body><canvas id="c"></canvas></body></html>';

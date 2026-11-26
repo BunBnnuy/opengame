@@ -2437,6 +2437,7 @@ export function SuperAgentWorkspace({
             <ArtifactBrowserPane
               active={active}
               chatId={activeChat?.id ?? null}
+              chatRunning={activeChat?.state === 'running' || activeChat?.state === 'waiting'}
               workingDir={activeChat?.workingDir}
               artifacts={viewerArtifacts}
               openTabIds={openTabIds}
