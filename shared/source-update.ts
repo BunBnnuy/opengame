@@ -779,37 +779,55 @@ const BUILD_OUTPUT_RELATIVE_PATHS = [
   'web/inline-video.html',
 ] as const;
 
-type BuildOutputBackup = {
-  target: string;
-  backup: string;
+export type BuildOutputBackupSet = {
+  rootDir: string;
+  entries: Array<{ target: string; backup: string }>;
 };
 
-async function backupBuildOutputs(repoRoot: string): Promise<BuildOutputBackup[]> {
-  const backups: BuildOutputBackup[] = [];
-  const suffix = `.rollback-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  for (const rel of BUILD_OUTPUT_RELATIVE_PATHS) {
-    const target = path.join(repoRoot, rel);
-    if (!existsSync(target)) continue;
-    const backup = path.join(path.dirname(target), `.${path.basename(target)}${suffix}`);
-    await rename(target, backup);
-    backups.push({ target, backup });
+export async function backupBuildOutputs(
+  repoRoot: string,
+  move: (src: string, dest: string) => Promise<void> = rename,
+): Promise<BuildOutputBackupSet> {
+  // Store backups under gitignored .artifacts/install so mid-build crashes or
+  // cleanup errors never leave untracked files that trigger dirty_worktree.
+  const backupBase = path.join(repoRoot, '.artifacts/install');
+  await mkdir(backupBase, { recursive: true });
+  const rootDir = await mkdtemp(path.join(backupBase, 'update-rollback-'));
+  const entries: Array<{ target: string; backup: string }> = [];
+  try {
+    for (const rel of BUILD_OUTPUT_RELATIVE_PATHS) {
+      const target = path.join(repoRoot, rel);
+      if (!existsSync(target)) continue;
+      const backup = path.join(rootDir, rel);
+      await mkdir(path.dirname(backup), { recursive: true });
+      await move(target, backup);
+      entries.push({ target, backup });
+    }
+    return { rootDir, entries };
+  } catch (error) {
+    await restoreBuildOutputs({ rootDir, entries }, move);
+    throw error;
   }
-  return backups;
 }
 
-async function restoreBuildOutputs(backups: readonly BuildOutputBackup[]): Promise<void> {
-  for (const item of [...backups].reverse()) {
+export async function restoreBuildOutputs(
+  backups: BuildOutputBackupSet | null,
+  move: (src: string, dest: string) => Promise<void> = rename,
+): Promise<void> {
+  if (!backups) return;
+  for (const item of [...backups.entries].reverse()) {
     await rm(item.target, { recursive: true, force: true }).catch(() => {});
     if (existsSync(item.backup)) {
-      await rename(item.backup, item.target).catch(() => {});
+      await mkdir(path.dirname(item.target), { recursive: true }).catch(() => {});
+      await move(item.backup, item.target).catch(() => {});
     }
   }
+  await rm(backups.rootDir, { recursive: true, force: true }).catch(() => {});
 }
 
-async function discardBuildBackups(backups: readonly BuildOutputBackup[]): Promise<void> {
-  for (const item of backups) {
-    await rm(item.backup, { recursive: true, force: true }).catch(() => {});
-  }
+export async function discardBuildBackups(backups: BuildOutputBackupSet | null): Promise<void> {
+  if (!backups) return;
+  await rm(backups.rootDir, { recursive: true, force: true }).catch(() => {});
 }
 
 async function isAncestor(
@@ -1067,7 +1085,7 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     let depsInstalled = false;
     let depsAttempted = false;
     let studioRebuilt = false;
-    let buildBackups: BuildOutputBackup[] = [];
+    let buildBackups: BuildOutputBackupSet | null = null;
     try {
       const buildState = await loadBuildStateModule(repoRoot);
       const needDeps = buildState
@@ -1095,7 +1113,7 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
         await runStudioBuild(exec, repoRoot, env);
         studioRebuilt = true;
         await discardBuildBackups(buildBackups);
-        buildBackups = [];
+        buildBackups = null;
         if (buildState) await buildState.recordSourceBuild(repoRoot).catch(() => {});
       }
     } catch (error) {
@@ -1112,7 +1130,7 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       // regardless of whether dependency reinstall succeeds, so no untracked .rollback-*
       // directories or missing studio/build outputs are ever left behind.
       const restoredBuildState = gitRolledBack ? await loadBuildStateModule(repoRoot).catch(() => null) : null;
-      if (buildBackups.length > 0) {
+      if (buildBackups) {
         if (gitRolledBack) {
           await restoreBuildOutputs(buildBackups);
           if (restoredBuildState && existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'))) {
@@ -1121,7 +1139,7 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
         } else {
           await discardBuildBackups(buildBackups);
         }
-        buildBackups = [];
+        buildBackups = null;
       }
 
       if (gitRolledBack && depsAttempted) {

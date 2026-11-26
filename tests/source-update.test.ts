@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
   applySourceUpdate,
+  backupBuildOutputs,
   checkSourceUpdate,
   classifyChangedFiles,
   compactRuntimeUpdateNotice,
@@ -81,7 +82,7 @@ async function createGitFixtures(t: any) {
   await writeFile(path.join(upstreamWork, 'game-projects.ts'), 'export const gameVersion = 1;\n');
   await writeFile(path.join(upstreamWork, 'skills/openmotion-game/SKILL.md'), '---\nname: openmotion-game\ndescription: v1\n---\n# v1\n');
   await writeFile(path.join(upstreamWork, 'shared/game-tools.ts'), 'export const tools = 1;\n');
-  await writeFile(path.join(upstreamWork, '.gitignore'), 'node_modules/\n.artifacts/\nstudio/build/\n');
+  await writeFile(path.join(upstreamWork, '.gitignore'), 'node_modules/\n.artifacts/\nstudio/build/\nweb/inline-video.html\n');
 
   await runGit(upstreamWork, ['add', '.']);
   await runGit(upstreamWork, ['commit', '-m', 'Initial main commit']);
@@ -940,6 +941,33 @@ test('shallow fetch fallback preserves ancestry proof and non-1 merge-base error
   const persisted = await readUpdateState(dataDir);
   assert.equal(persisted?.lastStatus, 'failed');
   assert.equal(persisted?.lastCheckedAt, undefined);
+});
+
+test('backupBuildOutputs stores backups under gitignored .artifacts/install and restores partial moves on mid-loop failure', async t => {
+  const { checkout } = await createGitFixtures(t);
+  await mkdir(path.join(checkout, 'web'), { recursive: true });
+  await writeFile(path.join(checkout, 'web/inline-video.html'), '<html>inline</html>');
+
+  let calls = 0;
+  await assert.rejects(
+    () => backupBuildOutputs(checkout, async (src, dest) => {
+      calls++;
+      if (calls === 2) throw new Error('EPERM: simulated second rename failure');
+      const { rename } = await import('node:fs/promises');
+      await rename(src, dest);
+    }),
+    /simulated second rename failure/,
+  );
+
+  // First moved output (studio/build) was restored and git status stays clean.
+  assert.equal(await readFile(path.join(checkout, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
+  assert.equal(await readFile(path.join(checkout, 'web/inline-video.html'), 'utf8'), '<html>inline</html>');
+  assert.equal(await runGit(checkout, ['status', '--porcelain=v1', '--untracked-files=all']), '');
+
+  // Even an uncleaned backup left in .artifacts/install (e.g. SIGKILL mid-build) stays gitignored.
+  const kept = await backupBuildOutputs(checkout);
+  assert.ok(kept.rootDir.startsWith(path.join(checkout, '.artifacts/install/')));
+  assert.equal(await runGit(checkout, ['status', '--porcelain=v1', '--untracked-files=all']), '');
 });
 
 test('syncInstalledHostSkills does not create missing host directories', async t => {
