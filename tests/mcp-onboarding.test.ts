@@ -309,8 +309,12 @@ test('capability-center handbook documents live sound-effects, 3d-asset (.glb), 
 
   const sfx = mcpScenarios.find(item => item.id === 'sound-effects-generate')!;
   assert.ok(sfx);
+  assert.match(sfx.description, /provider credits/i);
+  assert.doesNotMatch(sfx.description, /spend confirmation/i);
+  assert.match(sfx.prompt, /action=models modality=audio/);
   assert.match(sfx.prompt, /capabilityId="sound-effects"/);
-  assert.match(sfx.prompt, /Confirm spend/i);
+  assert.match(sfx.prompt, /parameters\.duration_seconds/);
+  assert.match(sfx.prompt, /prompt_influence/);
   assert.match(sfx.prompt, /stable requestId/);
 
   const asset3d = mcpScenarios.find(item => item.id === 'asset-3d-generate')!;
