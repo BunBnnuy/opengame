@@ -1571,7 +1571,7 @@ test('built-in published template remixes keep a clean title and emit dual-path 
 
 test('3D briefs auto-infer style "3d" and scaffold vendored Three.js unless negated or overridden',()=>fixture(async(_,workspace)=>{
   const {service}=await fakeKits(workspace);
-  for (const prompt of ['雨夜古刹 3D 第三人称武侠 Boss 战', '三维机甲格斗竞技场', 'Three.js desert rally racer']) {
+  for (const prompt of ['雨夜古刹 3D 第三人称武侠 Boss 战', '三维机甲格斗竞技场', 'Three.js desert rally racer', 'Volcano 3D survival runner', 'Piano 3D rhythm stage', 'no 3ds Max, use Three.js']) {
     const {game}=await service.create({prompt,genre:'casual',style:null,setting:null,multiplayer:false});
     assert.equal(game.style,'3d',prompt);
     assert.equal((await service.read(game.id,'vendor/three.module.min.js')).content,'// local three',prompt);

@@ -260,12 +260,12 @@ async function inventory(root: string, prefix = ''): Promise<{ path: string; byt
   }
   return result.sort((a, b) => a.path.localeCompare(b.path));
 }
+const NEGATED_3D_PROMPT_RE = /(?:(?:非|不要|不用|别用|别做|不做|无需)\s*(?:用|使用|做|采用)?\s*(?:(?:3d|three\.?js|webgl)(?![A-Za-z0-9])|三维)|(?<![A-Za-z0-9])(?:(?:not|no|without|avoid|skip|don['’]t\s+use|do\s+not\s+use)\s+|non-?\s*)(?:3d|three\.?js|webgl)(?![A-Za-z0-9]))/i;
+const POSITIVE_3D_PROMPT_RE = /(?<![A-Za-z0-9])(?:3d|three\.?js|webgl)(?![A-Za-z0-9])|三维/i;
+
 function inferStyleFromPrompt(prompt: string): GameStyle | null {
-  if (/(?:(?:非|不要|不用|别用|别做|不做|无需)\s*(?:用|使用|做|采用)?\s*(?:3d|three\.?js|webgl|三维)|(?:not|no|without|avoid|skip|don['’]t\s+use|do\s+not\s+use|non-?)\s*(?:3d|three\.?js|webgl))/i.test(prompt)) {
-    return null;
-  }
-  if (/(?<![A-Za-z0-9])(?:3d|three\.?js|webgl)(?![A-Za-z0-9])|三维/i.test(prompt)) return '3d';
-  return null;
+  if (NEGATED_3D_PROMPT_RE.test(prompt)) return null;
+  return POSITIVE_3D_PROMPT_RE.test(prompt) ? '3d' : null;
 }
 function briefInput(raw: any): GameBrief {
   if (!raw || typeof raw.prompt !== 'string' || !raw.prompt.trim() || raw.prompt.length > 20000) throw new GameError('prompt is required and must be at most 20000 characters');
