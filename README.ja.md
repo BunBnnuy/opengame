@@ -47,7 +47,7 @@ OpenGame は**世界初のオープンソース・フルスタック Super Game 
 以下のプロンプトを **DeepSeek TUI / Harness**、**Claude Code**、**Codex**、**WorkBuddy**、**Cursor**、**Gemini CLI**、または [対応する 22 種類のローカル Agent](#agent-wall) にそのまま貼り付けてください：
 
 ```text
-https://github.com/OpenDesignHQ/opengame/blob/main/docs/install.md を読み、手順に従って現在の Agent に OpenGame をインストール・接続し、/studios/game で Game Studio を開いたうえで、openmotion-game Skill を使ってプレイ可能なゲームのリミックスまたは新規制作を行ってください。
+https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md を読み、手順に従って現在の Agent に OpenGame をインストール・接続し、/studios/game で Game Studio を開いたうえで、openmotion-game Skill を使ってプレイ可能なゲームのリミックスまたは新規制作を行ってください。
 ```
 
 ### 2. Skills CLI でゲーム開発 Skill をインストール
@@ -55,7 +55,7 @@ https://github.com/OpenDesignHQ/opengame/blob/main/docs/install.md を読み、�
 [Skills CLI](https://github.com/vercel-labs/skills) を使って、ゲーム開発専用 Skill（`openmotion-game` および 3C 操作感・2D/3D アニメーション・プレイアブル広告仕様・品質ゲートを網羅した 18 冊のエンジニアリングハンドブック）を導入できます：
 
 ```sh
-npx skills add OpenDesignHQ/opengame --skill openmotion-game
+npx skills add nexu-io/opengame --skill openmotion-game
 ```
 
 > Skills CLI はワークフロー指針を Agent に導入します。12 個の `openmotion_game_*` ツール呼び出しや Game Studio 連携を行うには、以下のローカル起動と MCP 設定もあわせて完了してください。
@@ -65,7 +65,7 @@ npx skills add OpenDesignHQ/opengame --skill openmotion-game
 必要環境：**Git**、**npm**、**Node.js 22.18+**（CI では Node.js 26.11.1 に固定）。
 
 ```sh
-git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/OpenDesignHQ/opengame.git
+git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/nexu-io/opengame.git
 cd opengame
 npm ci
 npm run build:studio
@@ -463,22 +463,22 @@ OpenGame はローカル stdio MCP 経由で完全なゲーム開発ツール群
 | **プラットフォーム公開アダプター** | ミニゲームや Web ポータル向けのパッケージングスクリプト・マニフェスト生成・提出チェックリスト |
 | **Agent & モデル統合** | 新規ローカル Agent アダプターや BYOK マルチモーダルプロバイダー対応 |
 
-[コントリビューションガイド](CONTRIBUTING.md) · [リポジトリ開発規約](AGENTS.md) · [Issue を報告](https://github.com/OpenDesignHQ/opengame/issues)
+[コントリビューションガイド](CONTRIBUTING.md) · [リポジトリ開発規約](AGENTS.md) · [Issue を報告](https://github.com/nexu-io/opengame/issues)
 
 ## Contributors
 
 コード、ゲームテンプレート、Skill、ドキュメント、フィードバック、Issue で参加してくださったすべての皆さまに感謝します。
 
-<a href="https://github.com/OpenDesignHQ/opengame/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=OpenDesignHQ/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame contributors" />
+<a href="https://github.com/nexu-io/opengame/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=nexu-io/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame contributors" />
 </a>
 
 ## Star History
 
-<a href="https://www.star-history.com/#OpenDesignHQ/opengame&amp;Date">
+<a href="https://www.star-history.com/#nexu-io/opengame&amp;Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date&amp;theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
-    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
+    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
   </picture>
 </a>

@@ -45,7 +45,7 @@ test('each OpenGame README language links its guide and bundled game captures', 
     for (const section of ['quick-start', 'agent-wall', 'showcase', 'features', 'technical-guide', 'community']) {
       assert(text.includes(`id="${section}"`), `${file}: missing ${section}`);
     }
-    assert(text.includes('https://github.com/OpenDesignHQ/opengame.git'), file);
+    assert(text.includes('https://github.com/nexu-io/opengame.git'), file);
     assert(!text.includes('capcut-claude-motion-cover'), `${file}: stale video cover`);
     assert(!text.includes('npx skills add nexu-io/openmotion'), `${file}: upstream installer`);
     for (const asset of requiredAssets) {

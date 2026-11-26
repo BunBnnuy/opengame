@@ -2,7 +2,7 @@
 
 ## Repository source and hosted delivery
 
-The current production motion guidance templates now have reviewable source and localized metadata in [the repository catalog](https://github.com/OpenDesignHQ/opengame/tree/main/library/templates/catalog). Guides, examples and images at most 100 KB are directly available in Git; larger images load from existing CMS rendition links; reference videos and original ZIP downloads keep their CMS URLs. Open a template's source/preview.html without a build step (linked images require internet access). [Repository contribution and publication](template-repository.md) documents storage checks, remote asset identities and the CMS-compatible metadata export. Source checkouts now use this local catalog for Studio and MCP; instructions and paths are read from the loaded plugin, independently of the client working directory. NPM applications without the catalog read the latest published `main` catalog from OpenGame's R2 catalog, while the website continues to read the CMS publication. Source imports and PR merges do not publish CMS content.
+The current production motion guidance templates now have reviewable source and localized metadata in [the repository catalog](https://github.com/nexu-io/opengame/tree/main/library/templates/catalog). Guides, examples and images at most 100 KB are directly available in Git; larger images load from existing CMS rendition links; reference videos and original ZIP downloads keep their CMS URLs. Open a template's source/preview.html without a build step (linked images require internet access). [Repository contribution and publication](template-repository.md) documents storage checks, remote asset identities and the CMS-compatible metadata export. Source checkouts now use this local catalog for Studio and MCP; instructions and paths are read from the loaded plugin, independently of the client working directory. NPM applications without the catalog read the latest published `main` catalog from OpenGame's R2 catalog, while the website continues to read the CMS publication. Source imports and PR merges do not publish CMS content.
 
 ## Repository, hosted and CMS sources
 
@@ -25,7 +25,7 @@ Studio and MCP share one TemplateCatalog reader: repository files in a source ch
 | `npm run package:phase1 -- --template-env=dev` | DEV，ZIP 文件名带 `-dev` |
 | `npm run package:npm -- dist/npm-dev --template-env=dev` | Unversioned local DEV artifact (private); explicit `X.Y.Z-test.N` npm builds default to DEV, stable builds to prod |
 | `npm run package:test -- build <target> <release-version> --template-env=dev` | DEV 完整运行包；省略环境参数则为线上 |
-| Actions → Run workflow → `template_environment` | Select `dev` (default) or `prod` for npm and backup ZIP builds |
+| OpenMotion Actions → Motion package and release → `channel` | Select `test` (DEV defaults) or `stable` (prod defaults) for npm prepublish/publish builds |
 
 Packaging writes the environment and source to `shared/template-config.json`; Studio and MCP share it without requiring installation-time variables. NPM packages select `hosted` and follow the latest published main catalog independently of the application's version or DEV/prod setting. Template metadata and files belong to one immutable snapshot selected by that moving pointer. Source checkouts select `repository`; `MOTION_TEMPLATE_SOURCE=cms` explicitly selects CMS, where `MOTION_TEMPLATE_ENV` overrides the embedded environment. Local paths and Tool responses are documented in [the repository workflow](template-repository.md#run-from-a-local-clone).
 

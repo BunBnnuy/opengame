@@ -39,7 +39,7 @@ function rewriteGuideLinks(text, file, commit, localPaths = new Set()) {
     if (/^(?:#|[a-z][a-z\d+.-]*:|\/\/)/i.test(target)) return target;
     const pathname = target.split(/[?#]/, 1)[0];
     if (localPaths.has(path.posix.join(directory, pathname).replace(/\/$/, ''))) return target;
-    const base = image ? 'https://raw.githubusercontent.com/OpenDesignHQ/opengame/' : 'https://github.com/OpenDesignHQ/opengame/blob/';
+    const base = image ? 'https://raw.githubusercontent.com/nexu-io/opengame/' : 'https://github.com/nexu-io/opengame/blob/';
     return new URL(target, base + commit + '/' + (directory === '.' ? '' : directory + '/')).href;
   };
   return text

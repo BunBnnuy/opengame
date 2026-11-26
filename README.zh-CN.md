@@ -47,7 +47,7 @@ OpenGame 是**首个开源全栈 Super Game Agent**——把 **DeepSeek（DSH）
 把下面这段指令发给 **DeepSeek TUI / Harness**、**Claude Code**、**Codex**、**WorkBuddy**、**Cursor**、**Gemini CLI** 或任意 [22 个本地 Agent](#agent-wall)：
 
 ```text
-阅读 https://github.com/OpenDesignHQ/opengame/blob/main/docs/install.md，按照指南在当前 Agent 中安装并连接 OpenGame，打开 /studios/game 进入 Game Studio，然后使用 openmotion-game Skill 帮我复刻或制作一款可玩的游戏。
+阅读 https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md，按照指南在当前 Agent 中安装并连接 OpenGame，打开 /studios/game 进入 Game Studio，然后使用 openmotion-game Skill 帮我复刻或制作一款可玩的游戏。
 ```
 
 ### 2. 通过 Skills CLI 安装游戏工程 Skill
@@ -55,7 +55,7 @@ OpenGame 是**首个开源全栈 Super Game Agent**——把 **DeepSeek（DSH）
 使用 [Skills CLI](https://github.com/vercel-labs/skills) 安装游戏专用 Skill（`openmotion-game` 及 18 份涵盖 3C 手感、2D/3D 动画、试玩广告规范与质量门禁的工程手册）：
 
 ```sh
-npx skills add OpenDesignHQ/opengame --skill openmotion-game
+npx skills add nexu-io/opengame --skill openmotion-game
 ```
 
 > Skills CLI 只安装工作流指引；请结合下方本地运行与 MCP 配置，让 Agent 能够直接调用 12 个 `openmotion_game_*` 工具并打开 Game Studio。
@@ -65,7 +65,7 @@ npx skills add OpenDesignHQ/opengame --skill openmotion-game
 环境要求：**Git**、**npm**、**Node.js 22.18+**（CI 锁定 Node.js 26.11.1）。
 
 ```sh
-git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/OpenDesignHQ/opengame.git
+git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/nexu-io/opengame.git
 cd opengame
 npm ci
 npm run build:studio
@@ -463,22 +463,22 @@ OpenGame 通过本地 stdio MCP 暴露完整的游戏开发与测试工具集（
 | **平台上架与打包适配器** | 面向微信小游戏、抖音小游戏、Web 门户的打包脚本与提交清单 |
 | **Agent 与模型接入** | 更多本地 Agent 适配或 BYOK 多模态供应商集成 |
 
-[贡献指南](CONTRIBUTING.zh-CN.md) · [仓库开发规范](AGENTS.md) · [提交 Issue](https://github.com/OpenDesignHQ/opengame/issues)
+[贡献指南](CONTRIBUTING.zh-CN.md) · [仓库开发规范](AGENTS.md) · [提交 Issue](https://github.com/nexu-io/opengame/issues)
 
 ## 贡献者
 
 感谢每一位参与共建的开发者与创作者——代码、游戏模板、Skill、文档、反馈与 Issue。
 
-<a href="https://github.com/OpenDesignHQ/opengame/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=OpenDesignHQ/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame 贡献者" />
+<a href="https://github.com/nexu-io/opengame/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=nexu-io/opengame&amp;max=500&amp;columns=20&amp;anon=1" alt="OpenGame 贡献者" />
 </a>
 
 ## Star History
 
-<a href="https://www.star-history.com/#OpenDesignHQ/opengame&amp;Date">
+<a href="https://www.star-history.com/#nexu-io/opengame&amp;Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date&amp;theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
-    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=opendesignhq%2Fopengame&amp;type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
+    <img alt="OpenGame Star History" src="https://api.star-history.com/svg?repos=nexu-io%2Fopengame&amp;type=Date" />
   </picture>
 </a>

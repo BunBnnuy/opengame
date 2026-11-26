@@ -1,6 +1,6 @@
 # Run OpenGame from source
 
-This guide installs the `OpenDesignHQ/opengame` checkout and connects its game tools to a local agent. Use the source checkout for the game workflow described in this repository.
+This guide installs the `nexu-io/opengame` checkout and connects its game tools to a local agent. Use the source checkout for the game workflow described in this repository.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ This guide installs the `OpenDesignHQ/opengame` checkout and connects its game t
 ## Install and build
 
 ```sh
-git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/OpenDesignHQ/opengame.git
+git -c filter.lfs.process= -c filter.lfs.smudge= -c filter.lfs.required=false clone --depth 1 --single-branch --branch main https://github.com/nexu-io/opengame.git
 cd opengame
 npm ci
 npm run build:studio
