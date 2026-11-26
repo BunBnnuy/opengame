@@ -3734,6 +3734,20 @@ test('Super Agent runs multimodal generation automatically by default, gates whe
     assert.equal(unblockedBySettings, true);
     assert.equal(generationCalls, 4);
     assert.equal(unblockDone.state, 'idle');
+    await unblockService.close();
+    unblockService = undefined;
+
+    // 4) Corrupt preferences.json fails closed (requires confirmation, not cached as true) and recovers when repaired
+    await writeFile(path.join(store.directory, 'super-agent', 'preferences.json'), '{not-valid-json', 'utf8');
+    const corruptService = new SuperAgentConversations(store);
+    try {
+      assert.deepEqual(await corruptService.getPreferences(), { autoMultimodalGeneration: false });
+      // Repairing the file recovers cleanly without being poisoned by a cached fallback
+      await writeFile(path.join(store.directory, 'super-agent', 'preferences.json'), JSON.stringify({ autoMultimodalGeneration: true }), 'utf8');
+      assert.deepEqual(await corruptService.getPreferences(), { autoMultimodalGeneration: true });
+    } finally {
+      await corruptService.close();
+    }
   } finally {
     await Promise.allSettled([
       autoService?.close(),

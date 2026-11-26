@@ -1260,15 +1260,21 @@ export class SuperAgentConversations {
 
   async getPreferences(): Promise<SuperAgentPreferences> {
     if (this.preferencesCache) return { ...this.preferencesCache };
-    const stored = await readSettings<Partial<SuperAgentPreferences>>(
-      await this.preferencesFile(),
-      DEFAULT_SUPER_AGENT_PREFERENCES,
-    ).catch(() => DEFAULT_SUPER_AGENT_PREFERENCES);
-    const normalized: SuperAgentPreferences = {
-      autoMultimodalGeneration: stored?.autoMultimodalGeneration !== false,
-    };
-    this.preferencesCache = normalized;
-    return { ...normalized };
+    try {
+      const stored = await readSettings<Partial<SuperAgentPreferences>>(
+        await this.preferencesFile(),
+        DEFAULT_SUPER_AGENT_PREFERENCES,
+      );
+      const normalized: SuperAgentPreferences = {
+        autoMultimodalGeneration: stored?.autoMultimodalGeneration !== false,
+      };
+      this.preferencesCache = normalized;
+      return { ...normalized };
+    } catch {
+      // Fail closed on corrupt or unreadable preferences.json without caching, so paid generation
+      // requires confirmation until the file is readable again or explicitly updated.
+      return { autoMultimodalGeneration: false };
+    }
   }
 
   async updatePreferences(patch: unknown): Promise<SuperAgentPreferences> {

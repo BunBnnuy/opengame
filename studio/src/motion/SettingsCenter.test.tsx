@@ -142,3 +142,57 @@ it('renders Auto-generate multimodal assets toggle in General settings defaultin
     container.remove();
   }
 });
+
+it('ignores a slow mount GET response that arrives after the user toggles Auto-generate multimodal assets', async () => {
+  localStorage.removeItem('hf-studio-ui-preferences');
+  expect(savedAutoMultimodalGeneration()).toBe(true);
+
+  let resolveSlowGet!: (res: Response) => void;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith('/motion-api/super-agent/preferences')) {
+      if (init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body ?? '{}')) as { autoMultimodalGeneration?: boolean };
+        return Promise.resolve(new Response(JSON.stringify({ preferences: { autoMultimodalGeneration: Boolean(body.autoMultimodalGeneration) } }), { status: 200 }));
+      }
+      return new Promise<Response>(resolve => {
+        resolveSlowGet = resolve;
+      });
+    }
+    return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+  });
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        <I18nProvider initialLocale="zh-CN">
+          <SettingsCenter section="general" onSection={() => {}} openConnections={() => {}} />
+        </I18nProvider>,
+      );
+    });
+
+    const toggle = container.querySelector<HTMLButtonElement>('button[role="switch"][aria-label="自动生成多模态素材"]')!;
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    // User toggles OFF while the initial mount GET is still in flight
+    await act(async () => {
+      toggle.click();
+    });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(savedAutoMultimodalGeneration()).toBe(false);
+
+    // Stale mount GET finally resolves with the old `true` value -> must be ignored
+    await act(async () => {
+      resolveSlowGet(new Response(JSON.stringify({ preferences: { autoMultimodalGeneration: true } }), { status: 200 }));
+      await Promise.resolve();
+    });
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect(savedAutoMultimodalGeneration()).toBe(false);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
+});

@@ -12,6 +12,7 @@ const AUTO_MULTIMODAL_EVENT = 'motion:super-agent-auto-multimodal-change';
 const DEFAULT_FOLLOW_UP_BEHAVIOR: SuperAgentFollowUpMode = 'steer';
 const DEFAULT_PERMISSION_MODE: SuperAgentPermissionMode = 'auto';
 const DEFAULT_AUTO_MULTIMODAL_GENERATION = DEFAULT_SUPER_AGENT_PREFERENCES.autoMultimodalGeneration;
+let autoMultimodalMutationVersion = 0;
 
 /** Reads the persisted default approval mode (`auto` by default, or `on-request`). */
 export function savedPermissionMode(): SuperAgentPermissionMode {
@@ -105,9 +106,11 @@ export function useAutoMultimodalGeneration(): {
 
   useEffect(() => {
     let active = true;
+    const fetchVersion = autoMultimodalMutationVersion;
     void getSuperAgentPreferences()
       .then(result => {
-        if (!active || typeof result?.preferences?.autoMultimodalGeneration !== 'boolean') return;
+        if (!active || autoMultimodalMutationVersion !== fetchVersion) return;
+        if (typeof result?.preferences?.autoMultimodalGeneration !== 'boolean') return;
         setCachedAutoMultimodalGeneration(result.preferences.autoMultimodalGeneration);
       })
       .catch(() => {
@@ -120,6 +123,7 @@ export function useAutoMultimodalGeneration(): {
 
   const setEnabled = useCallback(async (next: boolean): Promise<boolean> => {
     const previous = savedAutoMultimodalGeneration();
+    const mutationVersion = ++autoMultimodalMutationVersion;
     setCachedAutoMultimodalGeneration(next);
     setSaving(true);
     try {
@@ -127,13 +131,19 @@ export function useAutoMultimodalGeneration(): {
       const committed = typeof result?.preferences?.autoMultimodalGeneration === 'boolean'
         ? result.preferences.autoMultimodalGeneration
         : next;
-      setCachedAutoMultimodalGeneration(committed);
+      if (autoMultimodalMutationVersion === mutationVersion) {
+        setCachedAutoMultimodalGeneration(committed);
+      }
       return true;
     } catch {
-      setCachedAutoMultimodalGeneration(previous);
+      if (autoMultimodalMutationVersion === mutationVersion) {
+        setCachedAutoMultimodalGeneration(previous);
+      }
       return false;
     } finally {
-      setSaving(false);
+      if (autoMultimodalMutationVersion === mutationVersion) {
+        setSaving(false);
+      }
     }
   }, []);
 
