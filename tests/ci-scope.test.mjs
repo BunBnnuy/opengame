@@ -17,9 +17,13 @@ test('README installation instructions and executable examples retain their full
   assert.notEqual(documentationContract('~~~sh\nnode a.mjs\n~~~'), documentationContract('~~~sh\nnode b.mjs\n~~~'));
 });
 
-test('only presentation documents skip Studio and packaging checks', () => {
+test('presentation documents and game template content skip product regressions', () => {
   assert.equal(classifyChanges(['README.md', 'docs/README.ja.md']).full, false);
   assert.equal(classifyChanges(['README.md']).maintainability, false);
+  assert.deepEqual(classifyChanges(['templates/games/racer/game.js', 'README.md']), {
+    full: false, maintainability: false, documents: ['README.md'],
+  });
+  assert.equal(classifyChanges(['templates/games/racer/game.js', 'game-projects.ts']).full, true);
   for (const file of [
     'skills/openmotion-director/SKILL.md', 'skills/openmotion-production/references/native.md',
     'install.md', 'docs/install.md', 'docs/npm-installation.md', 'AGENTS.md', 'CLAUDE.md',
@@ -98,36 +102,25 @@ const ciPath = new URL('../.github/workflows/ci.yml', import.meta.url);
 const jobBody = (ci, job) => ci.split(`  ${job}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
 const stepBody = (job, name) => job.split(`      - name: ${name}\n`)[1].split('      - name:')[0];
 
-test('parallel CI preserves common gates while separating distribution regressions', async () => {
+test('OpenGame CI covers source and runtime regressions independently of OpenMotion releases', async () => {
   const ci = await readFile(ciPath, 'utf8');
   const distribution = jobBody(ci, 'distribution');
   const distributionBrowser = jobBody(ci, 'distribution-browser');
-  for (const name of ['Scan tracked source without publication credentials', 'Validate manual package selection']) {
-    assert(!stepBody(distribution, name).includes('        if:'), `${name} must run for presentation docs too`);
-    assert(!distributionBrowser.includes(`- name: ${name}`), `${name} should run once in the package lane`);
+  const motionRelease = await readFile(new URL('../.github/workflows/motion-release-checks.yml', import.meta.url), 'utf8');
+  assert(jobBody(motionRelease, 'controls').includes("if: github.repository == 'nexu-io/openmotion'"));
+  assert.equal(stepBody(distribution, 'Scan tracked source without publication credentials').trimStart().split('\n')[0], "if: matrix.suite == 'source'");
+  for (const command of ['scripts/package-npm.mjs', 'scripts/test-package.mjs', 'tests/npm-package.test.ts',
+    'tests/packaged-game-download.mjs', 'tests/npm-installer.test.ts', 'tests/install-guide.test.ts', 'tests/stable-release.test.mjs']) {
+    assert(!runCommands(ci).includes(command), `OpenGame CI must not validate the OpenMotion installer: ${command}`);
   }
-  for (const name of ['Download full-bundle media explicitly', 'Install rendering test tools',
-    'Install locked Motion dependencies', 'Build Studio and validate tracking',
-    'Validate standalone installation and packaging', 'Build phase-one ZIP and exercise all public tools',
-    'Validate two-round inline rendering',
-    'Build immutable standalone artifacts', 'Generate candidate installation guide', 'Retain candidate installation guide for review']) {
-    assert(stepBody(distribution, name).includes("steps.scope.outputs.full == 'true'"), name);
-  }
-  assert(distribution.indexOf('npm run build:studio') < distribution.indexOf('scripts/package.ts --mcp-profile=phase1'));
-  assert(!distribution.includes('npm run package:phase1'));
   assert(!distribution.includes('npm run test:studio'));
   assert(stepBody(distribution, 'Check presentation documentation').includes('ci-scope.mjs --check-docs'));
   const checks = jobBody(ci, 'checks');
   const studio = jobBody(ci, 'studio');
-  const releaseControls = stepBody(checks, 'Test release controls without publication credentials');
-  assert(!releaseControls.includes('        if:'), 'Release controls must run for presentation docs too');
-  for (const file of ['release-workflows.test.mjs', 'release-scan.test.mjs', 'registry-download.test.mjs', 'stable-release.test.mjs']) {
-    assert(releaseControls.includes(file));
-  }
   for (const lane of [checks, studio]) {
     assert(!lane.includes('    needs:'), 'Independent lanes start without waiting for scope detection');
     assert(lane.includes('run: node .github/scripts/ci-scope.mjs'));
-    assert(stepBody(lane, 'Install locked Motion dependencies').includes("steps.scope.outputs.full == 'true'"));
+    assert(stepBody(lane, 'Install locked dependencies').includes("steps.scope.outputs.full == 'true'"));
   }
   const sourceStep = stepBody(checks, 'Check source and Studio types');
   assert(sourceStep.includes("steps.scope.outputs.full == 'true'"));
@@ -136,7 +129,7 @@ test('parallel CI preserves common gates while separating distribution regressio
   assert(sourceStep.includes('npm run typecheck:studio'));
   assert(sourceStep.includes('npm run typecheck:backend'));
   assert(!distribution.includes('npm run typecheck:backend'));
-  assert(stepBody(distribution, 'Validate standalone installation and packaging').includes('tests/inline-video.test.ts'));
+  assert(stepBody(distribution, 'OpenGame runtime regression').includes('tests/inline-video.test.ts'));
   assert(stepBody(distribution, 'Validate two-round inline rendering').includes('tests/inline-video-runtime.test.ts'));
   assert(!distribution.includes('npm run design:test'));
   for (const name of ['Related template preview browser regression', 'Transcript workflow browser regression',
@@ -149,16 +142,27 @@ test('parallel CI preserves common gates while separating distribution regressio
   const browserBuild = stepBody(distributionBrowser, 'Build browser regression inputs');
   assert(browserBuild.includes('npm run build:studio') && browserBuild.includes('npm run build:tracking'));
   assert(!distributionBrowser.includes('    needs:'), 'Browser regression starts independently of packaging');
-  assert(stepBody(distribution, 'Build Studio and validate tracking').includes('node --test tests/design-system.test.ts'));
-  assert(studio.includes('shard: [1, 2]'));
+  assert(stepBody(distribution, 'Validate tracking').includes('node --test tests/design-system.test.ts'));
+  for (const [lane, expectedPR, expectedExtra] of [
+    [distribution, ['source', 'runtime'], ['rendering']],
+    [distributionBrowser, ['workspace'], ['transcript', 'export']],
+  ]) {
+    const matrix = lane.match(/suite: \$\{\{ fromJSON\(github.event_name == 'pull_request' && '([^']+)' \|\| '([^']+)'\) \}\}/);
+    const suites = JSON.parse(matrix[2]);
+    assert.deepEqual(JSON.parse(matrix[1]), expectedPR);
+    assert.deepEqual(suites, [...expectedPR, ...expectedExtra]);
+    for (const [, suite] of lane.matchAll(/matrix\.suite == '([\w-]+)'/g)) assert(suites.includes(suite), `Unknown suite: ${suite}`);
+    assert(lane.includes('fail-fast: false'));
+  }
+  assert(stepBody(distribution, 'Super Agent regression').includes("matrix.suite == 'runtime'"));
+  assert(stepBody(distributionBrowser, 'Workspace, wrapper and session regression').includes("matrix.suite == 'workspace'"));
+  assert(studio.includes('shard: [1, 2, 3]'));
   assert(studio.includes('fail-fast: false'));
   const studioStep = stepBody(studio, 'Studio regression');
   assert(studioStep.includes("steps.scope.outputs.full == 'true'"));
-  assert(studioStep.includes('npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/2'));
+  assert(studioStep.includes('npm run test:studio -- --maxWorkers=2 --shard=${{ matrix.shard }}/3'));
   assert(!studio.includes('lfs pull'));
   assert(!studio.includes('apt-get'));
-  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  assert(pkg.scripts['package:phase1'].startsWith('npm run build:studio &&'), 'The public packaging command still builds its input');
 });
 
 test('the existing standalone gate rejects failed, cancelled, skipped and missing lanes', async () => {
@@ -191,18 +195,21 @@ test('the existing standalone gate rejects failed, cancelled, skipped and missin
   assert.equal(run({ ...manual, studio: { result: 'skipped' } }, true).status, 1);
 });
 
-// Root test files that no workflow names yet. The root `npm test` script is not invoked
-// by any lane, so a file only runs when a workflow names it. Freezing the current gap
-// keeps it visible: a new test file must either be scheduled or added here deliberately.
+// Root test files without an OpenGame workflow command.
 const unscheduledSuites = [
-  'asset-routing.test.ts', 'assets-use.test.ts', 'brand-story-tracking.test.ts',
+  'asset-routing.test.ts', 'assets-use.test.ts', 'brand-story-tracking.test.ts', 'bundled-npm-runtime.test.ts',
   'codex-host-handoff.test.ts', 'cold-start.test.ts', 'final-video-delivery.test.ts', 'final-video-ui.test.ts',
-  'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
+  'game-harness-generalization.test.ts', 'game-projects.test.ts', 'hosted-game-templates.test.ts',
+  'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-guide.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
   'legacy.test.ts', 'library-skill-catalog.test.ts', 'lint.test.ts', 'mcp-client.test.ts', 'mcp-config.test.ts', 'mcp.test.ts', 'media-save.test.ts',
-  'onboarding-recovery.test.ts', 'page-metadata.test.ts', 'phase1-runtime.test.ts', 'phase1-shared.test.ts',
-  'recreate-rendering.test.ts', 'registry-material-compat.test.ts', 'registry.test.ts', 'shared-editor.test.ts',
-  'source-native-runtime.test.ts', 'studio-history-availability.test.ts',
-  'template-metadata.test.ts', 'template-playback.test.ts', 'templates.test.ts', 'tracking-task-ledger.test.ts',
+  'npm-distribution-selection.test.ts', 'npm-installer.test.ts', 'npm-package.test.ts', 'onboarding-recovery.test.ts',
+  'package.test.ts', 'page-metadata.test.ts', 'phase1-runtime.test.ts', 'phase1-shared.test.ts',
+  'prebuilt-bootstrap.test.ts', 'recreate-rendering.test.ts', 'registry-download.test.mjs', 'registry-material-compat.test.ts', 'registry.test.ts',
+  'release-notes.test.mjs', 'release-workflows.test.mjs', 'shared-editor.test.ts', 'slacking-and-fruit-gym.test.ts',
+  'source-native-runtime.test.ts',
+  'stable-release.test.mjs', 'studio-history-availability.test.ts',
+  'template-metadata.test.ts', 'template-playback.test.ts', 'template-registry-consumer.test.mjs',
+  'templates.test.ts', 'test-package.test.ts', 'tracking-task-ledger.test.ts',
   'verify-export.test.ts', 'video-compare.test.ts', 'vision-runtime-native.test.mjs', 'vision-runtime.test.mjs',
   'welcome-template.test.ts', 'work-generation.test.ts', 'workflow-layering.test.ts',
 ];
@@ -210,9 +217,17 @@ const unscheduledSuites = [
 // Only shell bodies execute. A suite mentioned in a comment, a `paths:` filter or a
 // job name is documentation, not a scheduled run, so the scan reads `run:` bodies only.
 function runCommands(workflow) {
+  const jobs = workflow.split(/^jobs:\s*$/m)[1] ?? '';
+  return jobs.split(/^  [\w-]+:\s*$/m).filter(job => {
+    const gate = job.match(/^    if:\s*(?:\$\{\{\s*)?github\.repository\s*==\s*'([^']+)'\s*(?:&&|\}\}|$)/m);
+    return !gate || gate[1] === 'nexu-io/opengame';
+  }).map(jobCommands).join('\n');
+}
+
+function jobCommands(job) {
   const commands = [];
   let blockIndent = null;
-  for (const raw of workflow.split(/\r?\n/)) {
+  for (const raw of job.split(/\r?\n/)) {
     const line = raw.replace(/(^|\s)#.*$/, '');
     if (!line.trim()) continue;
     const indent = line.match(/^\s*/)[0].length;
