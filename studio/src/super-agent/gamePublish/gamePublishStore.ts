@@ -77,7 +77,7 @@ export type GamePublishThreadEntry =
   | { id: string; artifactId: string; kind: 'user'; key: string; name?: string }
   | { id: string; artifactId: string; kind: 'agent'; work: GamePublishWorkKind; title: string; name?: string; lines: Array<{ text: string; vars?: Record<string, string | number>; done: boolean }>; failed?: boolean; packageResult?: GamePackageResult }
   | { id: string; artifactId: string; kind: 'result'; title: string; detail: string; vars?: Record<string, string>; action?: string; href?: string; link?: boolean }
-  | { id: string; artifactId: string; kind: 'link-failed'; message: string; authRequired: boolean; closed: boolean }
+  | { id: string; artifactId: string; kind: 'link-failed'; message: string; authRequired: boolean }
   ;
 
 const sessions = new Map<string, GamePublishSession>();
@@ -261,7 +261,7 @@ export const gamePublishActions = {
     if (!session.link) {
       const linkError = { message: 'This game cannot get a share link yet', authRequired: false };
       update(artifactId, { linkError });
-      pushEntry(sessions.get(artifactId)!, { kind: 'link-failed', message: linkError.message, authRequired: false, closed: false });
+      pushEntry(sessions.get(artifactId)!, { kind: 'link-failed', message: linkError.message, authRequired: false });
       return;
     }
     update(artifactId, { linkPublishing: true, linkError: undefined });
@@ -281,10 +281,10 @@ export const gamePublishActions = {
         work.fail('Publishing failed: {message}', { message: linkError.message });
       }
       update(artifactId, { linkPublishing: false, linkError });
-      pushEntry(sessions.get(artifactId)!, { kind: 'link-failed', message: linkError.message, authRequired: linkError.authRequired, closed: false });
+      pushEntry(sessions.get(artifactId)!, { kind: 'link-failed', message: linkError.message, authRequired: linkError.authRequired });
     }
   },
-  choose(artifactId: string, platformId: GamePublishPlatformId, options?: { signedIn?: boolean }) {
+  choose(artifactId: string, platformId: GamePublishPlatformId, options?: { signedIn?: boolean; deferLink?: boolean }) {
     const session = sessions.get(artifactId);
     const platform = gamePublishPlatform(platformId);
     if (!session || !platform) return;
@@ -308,8 +308,8 @@ export const gamePublishActions = {
     });
     const latest = sessions.get(artifactId)!;
     // OpenDesign is selected by default when signed in; guests on non-Telegram platforms proceed without a blocking auth error,
-    // and guests on Telegram sign in directly inside Step 1 (LinkStep).
-    if (latest.linkToo && !latest.linkUrl && !latest.linkPublishing && options?.signedIn !== false) {
+    // guests on Telegram sign in directly inside Step 1 (LinkStep), and unknown account states defer until resolved.
+    if (latest.linkToo && !latest.linkUrl && !latest.linkPublishing && options?.signedIn !== false && !options?.deferLink) {
       void gamePublishActions.publishLink(artifactId);
     }
     if (platform.id === 'wechat') {

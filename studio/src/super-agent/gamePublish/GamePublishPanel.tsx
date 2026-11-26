@@ -31,6 +31,21 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
   const { t } = useI18n();
   const { account } = useAccountSummary();
   const session = useGamePublishSession(artifactId);
+  const deferredLinkRef = useRef(false);
+
+  // If the user picked a platform while account state was still loading, resolve the deferred OpenDesign link once loaded.
+  useEffect(() => {
+    if (!deferredLinkRef.current || !account || !session) return;
+    deferredLinkRef.current = false;
+    if (account.state === 'signed-in') {
+      if (session.linkToo && !session.linkUrl && !session.linkPublishing && !session.linkError) {
+        void gamePublishActions.publishLink(artifactId);
+      }
+    } else if (session.platformId && session.platformId !== 'telegram') {
+      gamePublishActions.setLinkToo(artifactId, false);
+    }
+  }, [account, artifactId, session]);
+
   if (!session?.open) return null;
   const platform = gamePublishPlatform(session.platformId);
   const close = () => gamePublishActions.close(artifactId);
@@ -67,7 +82,14 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
         })),
       ]}
       onChange={id => {
-        if (id) gamePublishActions.choose(artifactId, id, { signedIn: account?.state === 'signed-in' });
+        if (!id) return;
+        if (!account) {
+          deferredLinkRef.current = true;
+          gamePublishActions.choose(artifactId, id, { deferLink: true });
+          return;
+        }
+        deferredLinkRef.current = false;
+        gamePublishActions.choose(artifactId, id, { signedIn: account.state === 'signed-in' });
       }}
     />
   );
@@ -104,7 +126,7 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
       </>
     );
   } else {
-    // Other platforms are guided by the Agent in the conversation too; the panel only shows where things stand.
+    // Non-WeChat platforms render self-contained step cards in the publish thread; the panel tracks live step progress.
     head = header(t(platform.name), { label: t('Platforms'), onClick: () => gamePublishActions.showList(artifactId) });
     body = (
       <>

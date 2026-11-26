@@ -12,9 +12,8 @@ import './gamePublish.css';
 type Notify = (message: string, tone?: 'info' | 'error') => void;
 
 /**
- * Publish activity in the conversation, rendered by the page under the Agent's messages: real work as it finishes
- * (the OpenDesign link, package builds) and the controls of the current step. The Agent itself guides each step;
- * these entries are not sent to it.
+ * Publish activity rendered below the conversation: real work as it finishes (OpenDesign link, package builds)
+ * and self-contained inline step cards. Only WeChat Mini Game is Agent-guided; all other platforms advance locally.
  */
 export function GamePublishThread({ chatId, onOpenPanel, onNotify }: {
   chatId: string | null | undefined;
@@ -56,36 +55,34 @@ function LinkFailedCard({ entry, onNotify }: {
       <RemixIcon name="alert-fill" size={22} className="om-gp-result-icon" />
       <strong>{t('Publishing on OpenDesign failed')}</strong>
       <span className="om-gp-muted">{entry.authRequired ? t('Sign in to OpenDesign to publish your play link.') : entry.message}</span>
-      {!entry.closed && (
-        <div className="om-gp-result-actions">
-          {entry.authRequired ? (
-            <Button
-              variant="plain"
-              type="button"
-              className="om-gp-primary"
-              disabled={signingIn || authorizing}
-              onClick={() => void startSignIn()}
-            >
-              <RemixIcon name={authorizing ? 'loader-4-line' : 'login-box-line'} size={14} className={authorizing ? 'om-gp-spin' : undefined} />
-              <span>{authorizing ? t('Waiting for sign-in…') : t('Sign in with OpenDesign')}</span>
-            </Button>
-          ) : (
-            <Button variant="plain" type="button" className="om-gp-primary" onClick={() => void gamePublishActions.publishLink(entry.artifactId)}>
-              {t('Try again')}
-            </Button>
-          )}
-          {canSkip && (
-            <Button
-              variant="plain"
-              type="button"
-              className="om-gp-secondary"
-              onClick={() => gamePublishActions.dismissLinkError(entry.artifactId)}
-            >
-              {t('Skip, continue without link')}
-            </Button>
-          )}
-        </div>
-      )}
+      <div className="om-gp-result-actions">
+        {entry.authRequired ? (
+          <Button
+            variant="plain"
+            type="button"
+            className="om-gp-primary"
+            disabled={signingIn || authorizing}
+            onClick={() => void startSignIn()}
+          >
+            <RemixIcon name={authorizing ? 'loader-4-line' : 'login-box-line'} size={14} className={authorizing ? 'om-gp-spin' : undefined} />
+            <span>{authorizing ? t('Waiting for sign-in…') : t('Sign in with OpenDesign')}</span>
+          </Button>
+        ) : (
+          <Button variant="plain" type="button" className="om-gp-primary" onClick={() => void gamePublishActions.publishLink(entry.artifactId)}>
+            {t('Try again')}
+          </Button>
+        )}
+        {canSkip && (
+          <Button
+            variant="plain"
+            type="button"
+            className="om-gp-secondary"
+            onClick={() => gamePublishActions.dismissLinkError(entry.artifactId)}
+          >
+            {t('Skip, continue without link')}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
