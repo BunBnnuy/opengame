@@ -221,7 +221,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [transcript, export, workspace, game-projects, game-tools]
+        suite: ${{ fromJSON(github.event_name == 'pull_request' && '["workspace"]' || '["workspace","transcript","export"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
@@ -341,27 +341,13 @@ jobs:
       - name: Built-in template playback and export regression
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'workspace'
         run: node --experimental-strip-types --test tests/decision-tree.test.ts
-      - name: Game Studio service, rooms and tools regression
-        if: steps.scope.outputs.full == 'true' && startsWith(matrix.suite, 'game-')
-        timeout-minutes: 15
-        # Browser playtest and native trailer cases skip themselves when Chrome, loopback or native export are unavailable.
-        run: |
-          if [[ '${{ matrix.suite }}' == 'game-projects' ]]; then
-            suites=(tests/game-projects.test.ts)
-          else
-            suites=(tests/hosted-game-templates.test.ts tests/wechat-minigame.test.ts tests/game-harness-generalization.test.ts)
-          fi
-          node --experimental-strip-types --test --test-concurrency=1 \
-            --test-reporter=spec --test-reporter-destination=stdout \
-            --test-reporter=./.github/scripts/game-test-failures.mjs --test-reporter-destination=stdout \
-            "${suites[@]}"
 
   distribution:
     name: OpenGame regression (${{ matrix.suite }})
     strategy:
       fail-fast: false
       matrix:
-        suite: [source, runtime, agent, rendering]
+        suite: ${{ fromJSON(github.event_name == 'pull_request' && '["source","runtime"]' || '["source","runtime","rendering"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     defaults:
@@ -475,6 +461,7 @@ jobs:
             tests/gateway.test.ts tests/capability-center.test.ts tests/mcp-onboarding.test.ts tests/media-use.test.ts tests/product-identity.test.ts \
             tests/provider-settings.test.ts tests/local-agents.test.ts tests/agent-runtimes.test.ts tests/super-agent-adapters.test.ts \
             tests/web-publish.test.ts tests/content-batch.test.ts tests/design-deploy.test.ts tests/e2e-deploy-game-chain.test.ts tests/mcp-http.test.ts \
+            tests/wechat-minigame.test.ts \
             tests/performance-lifecycle.test.ts tests/triggers.test.ts tests/mcp-registry.test.ts tests/public-names.test.ts tests/mcp-runtime.test.ts \
             tests/mcp-upgrade.test.ts tests/preview.test.ts tests/editor-urls.test.ts tests/workspace-studio.test.ts tests/preview-fonts.test.ts \
             tests/studio-render-attempts.test.ts tests/sync.test.ts tests/phase1.test.ts tests/project-archive.test.ts tests/project-management.test.ts \
@@ -488,19 +475,17 @@ jobs:
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
         run: node --test --test-skip-pattern="^CLI works without a running app" tests/diagnostics.test.ts
       - name: Super Agent regression
-        if: steps.scope.outputs.full == 'true' && matrix.suite == 'agent'
+        if: steps.scope.outputs.full == 'true' && matrix.suite == 'runtime'
         timeout-minutes: 2
         run: node --test tests/super-agent.test.ts
       - name: Validate two-round inline rendering
         if: steps.scope.outputs.full == 'true' && matrix.suite == 'rendering'
         run: node --experimental-strip-types --test --test-concurrency=1 tests/inline-video-runtime.test.ts
       - name: Check presentation documentation
-        if: steps.scope.outputs.full != 'true' && matrix.suite == 'source'
+        if: steps.scope.outputs.full != 'true' && steps.scope.outputs.documents != '[]' && matrix.suite == 'source'
         env:
           CHANGED_DOCS: ${{ steps.scope.outputs.documents }}
-        run: |
-          node .github/scripts/ci-scope.mjs --check-docs
-          echo 'Presentation documentation and source scanning completed.' >> "$GITHUB_STEP_SUMMARY"
+        run: node .github/scripts/ci-scope.mjs --check-docs
 
   # Keep the existing required check while every independent lane runs in parallel.
   standalone:

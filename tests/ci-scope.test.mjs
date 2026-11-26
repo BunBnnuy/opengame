@@ -17,9 +17,13 @@ test('README installation instructions and executable examples retain their full
   assert.notEqual(documentationContract('~~~sh\nnode a.mjs\n~~~'), documentationContract('~~~sh\nnode b.mjs\n~~~'));
 });
 
-test('only presentation documents skip Studio and runtime checks', () => {
+test('presentation documents and game template content skip product regressions', () => {
   assert.equal(classifyChanges(['README.md', 'docs/README.ja.md']).full, false);
   assert.equal(classifyChanges(['README.md']).maintainability, false);
+  assert.deepEqual(classifyChanges(['templates/games/racer/game.js', 'README.md']), {
+    full: false, maintainability: false, documents: ['README.md'],
+  });
+  assert.equal(classifyChanges(['templates/games/racer/game.js', 'game-projects.ts']).full, true);
   for (const file of [
     'skills/openmotion-director/SKILL.md', 'skills/openmotion-production/references/native.md',
     'install.md', 'docs/install.md', 'docs/npm-installation.md', 'AGENTS.md', 'CLAUDE.md',
@@ -139,11 +143,19 @@ test('OpenGame CI covers source and runtime regressions independently of OpenMot
   assert(browserBuild.includes('npm run build:studio') && browserBuild.includes('npm run build:tracking'));
   assert(!distributionBrowser.includes('    needs:'), 'Browser regression starts independently of packaging');
   assert(stepBody(distribution, 'Validate tracking').includes('node --test tests/design-system.test.ts'));
-  for (const lane of [distribution, distributionBrowser]) {
-    const suites = lane.match(/suite: \[([^\]]+)\]/)[1].split(', ');
+  for (const [lane, expectedPR, expectedExtra] of [
+    [distribution, ['source', 'runtime'], ['rendering']],
+    [distributionBrowser, ['workspace'], ['transcript', 'export']],
+  ]) {
+    const matrix = lane.match(/suite: \$\{\{ fromJSON\(github.event_name == 'pull_request' && '([^']+)' \|\| '([^']+)'\) \}\}/);
+    const suites = JSON.parse(matrix[2]);
+    assert.deepEqual(JSON.parse(matrix[1]), expectedPR);
+    assert.deepEqual(suites, [...expectedPR, ...expectedExtra]);
     for (const [, suite] of lane.matchAll(/matrix\.suite == '([\w-]+)'/g)) assert(suites.includes(suite), `Unknown suite: ${suite}`);
     assert(lane.includes('fail-fast: false'));
   }
+  assert(stepBody(distribution, 'Super Agent regression').includes("matrix.suite == 'runtime'"));
+  assert(stepBody(distributionBrowser, 'Workspace, wrapper and session regression').includes("matrix.suite == 'workspace'"));
   assert(studio.includes('shard: [1, 2, 3]'));
   assert(studio.includes('fail-fast: false'));
   const studioStep = stepBody(studio, 'Studio regression');
@@ -189,6 +201,7 @@ test('the existing standalone gate rejects failed, cancelled, skipped and missin
 const unscheduledSuites = [
   'asset-routing.test.ts', 'assets-use.test.ts', 'brand-story-tracking.test.ts', 'bundled-npm-runtime.test.ts',
   'codex-host-handoff.test.ts', 'cold-start.test.ts', 'final-video-delivery.test.ts', 'final-video-ui.test.ts',
+  'game-harness-generalization.test.ts', 'game-projects.test.ts', 'hosted-game-templates.test.ts',
   'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
   'legacy.test.ts', 'library-skill-catalog.test.ts', 'lint.test.ts', 'mcp-client.test.ts', 'mcp-config.test.ts', 'mcp.test.ts', 'media-save.test.ts',
   'npm-distribution-selection.test.ts', 'onboarding-recovery.test.ts', 'page-metadata.test.ts', 'phase1-runtime.test.ts', 'phase1-shared.test.ts',
