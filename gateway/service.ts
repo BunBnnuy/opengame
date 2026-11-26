@@ -545,9 +545,11 @@ export class ModelGateway {
         }
         if (model.provider === 'opendesign' && (await this.cloudContext()).identity !== cloudIdentity) failSubmit('CONFIG_CHANGED', 'config_changed', 'Cloud configuration changed; reload models before generating');
         const referenceCount = (input.library?.references?.length ?? 0) + (input.referenceAsset ? 1 : 0);
-        const resolvedParameters = resolveGenerationParameters(model, params, referenceCount > 0);
-        try { validateGenerationOptions(model, resolvedParameters, referenceCount > 0, model.generationOptions); }
-        catch (error) { rejection = { reason: 'OPTIONS_INVALID', category: 'client_validation' }; throw error; }
+        let resolvedParameters: Record<string, unknown>;
+        try {
+          resolvedParameters = resolveGenerationParameters(model, params, referenceCount > 0);
+          validateGenerationOptions(model, resolvedParameters, referenceCount > 0, model.generationOptions);
+        } catch (error) { rejection = { reason: 'OPTIONS_INVALID', category: 'client_validation' }; throw error; }
         // Video sends only a first frame; the project-direct referenceAsset route stays image-only as before.
         const referenceLimit = input.referenceAsset && input.modality !== 'image' ? 0 : modelReferenceLimit(model);
         if (referenceCount && model.provider === 'opendesign' && model.modality === 'image' && model.supportsImageReference === undefined) failSubmit('REFERENCE_UNSUPPORTED', 'reference_invalid', 'Image editing capability is unknown. Sync Cloud models before using references.');
@@ -630,7 +632,7 @@ export class ModelGateway {
     } catch (error) {
       const reason: MediaGenerationRejectionReason = rejection?.reason ?? 'PREFLIGHT_FAILED';
       const category: MediaGenerationRejectionCategory = rejection?.category ?? 'other';
-      const modelMeta = resolvedModel ? providerTrackingMeta(resolvedModel) : {};
+      const modelMeta = resolvedModel ? providerTrackingMeta(resolvedModel) : undefined;
       const paramMeta = input.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters)
         ? extractRequestedMediaParams(input.parameters as Record<string, unknown>) : {};
       this.options.tracking?.track('media_generation_rejected', {
@@ -642,8 +644,8 @@ export class ModelGateway {
         entry_surface: entrySurface,
         destination,
         ...(requestedCap ? { capability_id: requestedCap } : {}),
-        ...(requestedMode && !modelMeta.generation_mode ? { generation_mode: requestedMode } : {}),
-        ...modelMeta,
+        ...(requestedMode && !modelMeta?.generation_mode ? { generation_mode: requestedMode } : {}),
+        ...(modelMeta ?? {}),
         ...paramMeta,
         reference_count: rawRefCount,
         is_edit: isEdit,

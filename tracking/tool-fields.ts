@@ -96,6 +96,7 @@ export const superAgentErrorCodes = [
   'ABORTED', 'INTERRUPTED', 'TIMEOUT', 'AUTH_ERROR', 'RATE_LIMITED', 'RUNTIME_UNAVAILABLE', 'TURN_FAILED',
 ] as const;
 
+// Mirror of `defaultCapabilities.map(c => c.id)` in `shared/capability-registry.ts` (kept local for Studio/WebMCP bundle isolation; pinned by tests).
 export const approvedCapabilityIds = [
   'text-to-image', 'image-edit', 'remove-background', 'image-blend', 'relight',
   'character', 'shot-image', 'inpainting', 'expand-image', 'upscale-4k',
@@ -198,13 +199,6 @@ export function extractUpstreamErrorCode(error: unknown): MediaGenerationUpstrea
   const record = error as { upstreamCode?: unknown };
   // Only read explicit upstreamCode attached by gateway/account error parsers; never read Node/undici errno strings.
   return normalizeUpstreamErrorCode(record.upstreamCode);
-}
-
-export function isEntitlementUpstreamCode(code: string | undefined): boolean {
-  return code === 'tier_model_not_entitled'
-    || code === 'tier_request_kind_not_entitled'
-    || code === 'model_access_denied'
-    || code === 'insufficient_balance';
 }
 
 export const toolDimensions = {

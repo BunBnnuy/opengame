@@ -8,6 +8,7 @@ import { createTracker, validField, validProperties } from '../tracking/core.ts'
 import { omEvents, studioEvents } from '../tracking/events.ts';
 import { resumableDownload } from '../gateway/resumable-download.ts';
 import {
+  approvedCapabilityIds,
   extractHttpStatus,
   extractUpstreamErrorCode,
   mediaGenerationError,
@@ -17,6 +18,7 @@ import {
   toolInputFields,
   toolResultFields,
 } from '../tracking/tool-fields.ts';
+import { defaultCapabilities } from '../shared/capability-registry.ts';
 import { withErrorMeta } from '../gateway/network.ts';
 import type { HostContext } from '../tracking/host.ts';
 import { ModelGateway } from '../gateway/service.ts';
@@ -505,7 +507,8 @@ test('Media tracking completeness: conservation funnel, failure_phase, http_stat
   assert.equal(mediaGenerationError(new Error('Provider returned no media'), 'decoding'), 'EMPTY_OUTPUT');
   assert.equal(mediaGenerationError(new Error('Provider did not return valid image media'), 'decoding'), 'INVALID_MEDIA');
 
-  // Schema integer & studio isolation guards
+  // Schema integer, capability allowlist drift, & studio isolation guards
+  assert.deepEqual([...approvedCapabilityIds], defaultCapabilities.map(c => c.id));
   assert.equal(validField(omEvents.media_generation_result.fields.http_status, 402), true);
   assert.equal(validField(omEvents.media_generation_result.fields.http_status, 402.5), false);
   assert.equal(Object.hasOwn(studioEvents, 'media_generation_rejected'), false);
