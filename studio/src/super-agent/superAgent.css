@@ -12173,20 +12173,24 @@
   gap: 12px;
 }
 
+/* Narrow screens: one row when it fits, otherwise wrap so every button stays on screen. */
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-rail {
   flex-direction: row;
+  flex-wrap: wrap;
   justify-content: center;
   width: auto;
   padding: 8px 12px;
-  gap: 20px;
+  gap: 10px 20px;
   overflow: visible;
 }
 
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-nav,
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-actions {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   flex-direction: row;
-  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 14px;
 }
 
 .om-sa-template-feed-action {
@@ -12286,4 +12290,38 @@
 
 .om-sa-template-feed-info-body > p {
   margin: 0;
+}
+
+/* Narrow screens: compact icon-only row so the game keeps its height (names stay in aria-label / tooltip). */
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action {
+  min-width: 36px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action[data-variant="circle"] .om-sa-template-feed-action-icon,
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action[data-variant="primary"] .om-sa-template-feed-action-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action-icon {
+  width: 32px;
+  height: 36px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-rail {
+  gap: 6px 12px;
+  padding: 6px 8px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-nav,
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-actions {
+  gap: 6px;
 }
