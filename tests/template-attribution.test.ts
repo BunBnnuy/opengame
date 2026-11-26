@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { phase1Tools, validateInput } from '../shared/phase1-tools.ts';
-import { withTemplateAttribution } from '../shared/template-attribution.ts';
+import { templatePrompts, withTemplateAttribution } from '../shared/template-prompts.ts';
 import { toolInputFields } from '../tracking/tool-fields.ts';
 import { createTracker, validProperties, type PendingEvent } from '../tracking/core.ts';
 import { omEvents } from '../tracking/events.ts';
@@ -14,7 +14,7 @@ const schema = phase1Tools.find(tool => tool.name === 'openmotion_get_template')
 
 test('copy instructions preserve explicit metadata and legacy calls remain valid', () => {
   for (const templateEntry of ['website', 'editor'] as const) {
-    const prompt = withTemplateAttribution('My requirements:\n', templateId, copyAttemptId, templateEntry);
+    const prompt = withTemplateAttribution('My requirements:\n', templateId, copyAttemptId, templateEntry, 'en');
     const args = JSON.parse(prompt.split('\n')[1]!);
     assert.deepEqual(args, { templateId, copyAttemptId, templateEntry });
     validateInput(schema, args);
@@ -32,6 +32,19 @@ test('copy instructions preserve explicit metadata and legacy calls remain valid
   for (const args of [{ templateId, copyAttemptId: 'bad' }, { templateId, templateEntry: 'inferred' }, { templateId, extra: true }]) {
     assert.throws(() => validateInput(schema, args));
   }
+});
+
+test('copy instructions localize the attribution text and preserve both argument sets', () => {
+  const instructions = new Set<string>();
+  for (const [locale, brief] of Object.entries(templatePrompts)) {
+    const prompt = withTemplateAttribution(brief, templateId, copyAttemptId, 'editor', locale);
+    assert.ok(prompt.endsWith(brief));
+    const preamble = prompt.slice(0, -brief.length).trimEnd();
+    instructions.add(preamble);
+    assert.ok(preamble.includes(JSON.stringify({ templateId, copyAttemptId, templateEntry: 'editor' })));
+    assert.ok(preamble.includes(JSON.stringify({ templateId })));
+  }
+  assert.equal(instructions.size, Object.keys(templatePrompts).length);
 });
 
 test('actual MCP RPC reads emit one matching start/result pair with optional copy metadata', () => fixture(async store => {

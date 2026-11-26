@@ -1,4 +1,5 @@
 import { catalogLocale } from './template-locale.ts';
+import type { TemplateEntry } from './template-attribution.ts';
 
 // Template instructions shared by catalogs and conversation recommendation cards.
 export const templatePrompts: Record<string, string> = {
@@ -14,6 +15,27 @@ export const templatePrompts: Record<string, string> = {
   "tr": "Talimatlar: OpenMotion eklentisini kullanın. Yüklü değilse {installUrl} adresindeki talimatlarla kurup bağlayın, ardından devam edin.\nSeçilen şablon: {name} ({id})\nYaratıcı brief: Şablonu isteklerime ve eklerime göre uyarlayın. Basit metin kartları oluşturmak yerine şablonun özgün sahne, arayüz ve animasyon yapısını koruyun (düzenlenebilir şablonlarda metin ve medyaları doğrudan yerinde değiştirin); içerik çıkarılması gerekiyorsa önce ödünleri açıklayın. HTML ve MP4 teslim edin.\nİsteklerim:\n",
   "pt-br": "Instruções: Use o plugin OpenMotion. Se ainda não estiver instalado, siga {installUrl} para instalar e conectar, depois continue.\nModelo selecionado: {name} ({id})\nBriefing criativo: Adapte o modelo com base nos meus requisitos e anexos. Preserve as cenas, interfaces e animações originais (em modelos editáveis, substitua textos e mídias diretamente no lugar) em vez de recriar cartões simples de texto; explique primeiro os ajustes se algum conteúdo precisar ficar de fora. Entregue HTML e MP4.\nMeus requisitos:\n"
 };
+
+const attributionInstructions: Record<string, string> = {
+  en: "Once connected, call openmotion_get_template with templateId. Include copyAttemptId and templateEntry only if each is declared in the connected tool's input schema:\n{args}\nIf the tool rejects an unsupported optional field, retry once with only {legacy}. Reuse the same metadata on supported retries. Attribution is optional and must never block installation or template use or require an upgrade.",
+  'zh-CN': '连接后，使用 templateId 调用 openmotion_get_template。仅当工具的输入定义声明了对应字段时，才传入 copyAttemptId 或 templateEntry：\n{args}\n如果工具不支持某个可选字段而拒绝请求，只用 {legacy} 重试一次。重试时，受支持的字段沿用原值。归因是可选的，不应阻碍安装或使用模板，也无需为此升级。',
+  de: 'Rufe nach dem Verbinden openmotion_get_template mit templateId auf. Übergib copyAttemptId und templateEntry jeweils nur, wenn das Eingabeschema des Tools das Feld deklariert:\n{args}\nLehnt das Tool ein unbekanntes optionales Feld ab, versuche es einmal nur mit {legacy}. Verwende bei unterstützten Wiederholungen dieselben Werte. Die Zuordnung ist optional, darf Installation und Vorlagennutzung nicht blockieren und erfordert kein Upgrade.',
+  fr: 'Une fois la connexion établie, appelle openmotion_get_template avec templateId. Ajoute copyAttemptId et templateEntry uniquement si le schéma d’entrée déclare le champ correspondant :\n{args}\nSi l’outil refuse un champ facultatif non pris en charge, réessaie une fois avec seulement {legacy}. Réutilise les mêmes valeurs pour les champs acceptés. L’attribution est facultative et ne doit ni bloquer l’installation ou l’utilisation du modèle, ni imposer une mise à niveau.',
+  es: 'Tras conectarte, llama a openmotion_get_template con templateId. Incluye copyAttemptId y templateEntry solo si el esquema de entrada declara el campo correspondiente:\n{args}\nSi la herramienta rechaza un campo opcional no compatible, reintenta una vez solo con {legacy}. Conserva los mismos valores en los reintentos que los admitan. La atribución es opcional y no debe impedir la instalación ni el uso de la plantilla ni exigir una actualización.',
+  it: 'Dopo la connessione, chiama openmotion_get_template con templateId. Includi copyAttemptId e templateEntry solo se lo schema di input dichiara il rispettivo campo:\n{args}\nSe lo strumento rifiuta un campo facoltativo non supportato, riprova una volta solo con {legacy}. Mantieni gli stessi valori nei tentativi che li supportano. L’attribuzione è facoltativa e non deve bloccare l’installazione o l’uso del modello né richiedere un aggiornamento.',
+  ja: '接続後、templateId を指定して openmotion_get_template を呼び出してください。copyAttemptId と templateEntry は、それぞれがツールの入力スキーマに定義されている場合のみ含めてください。\n{args}\n未対応の任意項目が原因で拒否された場合は、{legacy} だけで一度再試行してください。対応している項目には再試行時も同じ値を使ってください。コピー元の記録は任意です。そのためにインストールやテンプレートの利用を中断したり、アップグレードを求めたりしないでください。',
+  ko: '연결 후 templateId로 openmotion_get_template를 호출하세요. copyAttemptId와 templateEntry는 도구의 입력 스키마에 해당 필드가 선언된 경우에만 각각 포함하세요.\n{args}\n도구가 지원하지 않는 선택 필드를 거부하면 {legacy}만 사용해 한 번 다시 시도하세요. 지원되는 필드는 재시도할 때도 같은 값을 사용하세요. 복사 출처 기록은 선택 사항이며, 이 때문에 설치나 템플릿 사용을 중단하거나 업그레이드를 요구하지 마세요.',
+  ru: 'После подключения вызовите openmotion_get_template с templateId. Передавайте copyAttemptId и templateEntry лишь в том случае, если соответствующее поле объявлено во входной схеме инструмента:\n{args}\nЕсли инструмент отклонит неподдерживаемое необязательное поле, повторите запрос один раз только с {legacy}. При повторных запросах сохраняйте значения поддерживаемых полей. Отслеживание источника необязательно и не должно мешать установке или использованию шаблона либо требовать обновления.',
+  tr: 'Bağlantı kurulduğunda openmotion_get_template aracını templateId ile çağırın. copyAttemptId ve templateEntry alanlarının her birini yalnızca aracın girdi şemasında tanımlıysa ekleyin:\n{args}\nAraç desteklenmeyen isteğe bağlı bir alanı reddederse yalnızca {legacy} ile bir kez daha deneyin. Desteklenen alanların değerlerini yeniden denemelerde koruyun. Kopyalama kaynağının kaydı isteğe bağlıdır; kurulumu veya şablon kullanımını engellememeli ve yükseltme gerektirmemelidir.',
+  'pt-br': 'Após a conexão, chame openmotion_get_template com templateId. Inclua copyAttemptId e templateEntry somente se o esquema de entrada declarar o respectivo campo:\n{args}\nSe a ferramenta rejeitar um campo opcional sem suporte, tente mais uma vez usando apenas {legacy}. Mantenha os mesmos valores nas tentativas que os aceitarem. A atribuição é opcional e não deve impedir a instalação ou o uso do modelo nem exigir uma atualização.',
+};
+
+export function withTemplateAttribution(prompt: string, templateId: string, copyAttemptId: string, templateEntry: TemplateEntry, locale: string): string {
+  const language = catalogLocale(Object.keys(attributionInstructions), locale, 'en');
+  const values = { args: JSON.stringify({ templateId, copyAttemptId, templateEntry }), legacy: JSON.stringify({ templateId }) };
+  const instruction = attributionInstructions[language].replace(/\{(args|legacy)\}/g, (_, key: keyof typeof values) => values[key]);
+  return `${instruction}\n\n${prompt}`;
+}
 
 /** Shared creation brief; source capabilities are resolved after the user submits it. */
 export function formatTemplatePrompt(template: { id: string; title: string }, locale = 'zh-CN'): string {

@@ -1,5 +1,5 @@
-import { withTemplateAttribution } from '../../../shared/template-attribution';
-import { slug } from '../../../tracking/core';
+import { withTemplateAttribution } from '../../../shared/template-prompts';
+import { slugField } from './reporting';
 import { Button } from 'open-design-ui/button';
 import { IconButton } from 'open-design-ui/icon-button';
 import { useEffect, useRef, useState } from 'react';
@@ -73,12 +73,12 @@ export function HomeTemplates({ onSelect }: { onSelect?: (template: GalleryTempl
   async function copy(template: GalleryTemplate) {
     setFeedback(''); setManualCopy('');
     const copyAttemptId = crypto.randomUUID();
-    const fields = { copy_attempt_id: copyAttemptId, ...(slug.test(template.id) ? { template_id: template.id } : {}) };
+    const fields = { copy_attempt_id: copyAttemptId, ...slugField('template_id', template.id) };
     void trackMotion('ui_click', { page_name: 'studio', area: 'templates', element: 'copy_template', ...fields });
     try {
       const connection = info ?? await motionApi<IntegrationInfo>('/integration');
       setInfo(connection);
-      const prompt = withTemplateAttribution(templatePrompt(connection, host, template, locale), template.id, copyAttemptId, 'editor');
+      const prompt = withTemplateAttribution(templatePrompt(connection, host, template, locale), template.id, copyAttemptId, 'editor', locale);
       try {
         if (!(await copyTextToClipboard(prompt))) throw new Error('Clipboard copy failed');
         void trackMotion('template_instruction_copy_result', { host_product: host, page_name: 'home', template_entry: 'editor', ...fields, copy_status: 'clipboard_written' });
