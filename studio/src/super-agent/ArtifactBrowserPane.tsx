@@ -74,6 +74,7 @@ import {
   type MotionProjectArtifactHandle,
 } from './MotionProjectArtifactView';
 import { SimpleMarkdown } from './SimpleMarkdown';
+import { TemplateFeedStage, type TemplateFeedControls } from './TemplateFeedRail';
 
 type WebDevicePresetId = 'responsive' | 'desktop' | 'tablet' | 'mobile';
 
@@ -1817,6 +1818,7 @@ export function ArtifactBrowserPane({
   onOpenInGameStudio,
   onOpenInAssets,
   onOpenInBrandKit,
+  templateFeed = null,
 }: {
   active?: boolean;
   chatId: string | null;
@@ -1849,6 +1851,8 @@ export function ArtifactBrowserPane({
   onOpenInGameStudio?: (projectId: string) => void;
   onOpenInAssets: (assetId: string, versionId?: string) => void;
   onOpenInBrandKit: (kitId?: string) => void;
+  /** Previous / next controls for template games opened from the showcase list. */
+  templateFeed?: TemplateFeedControls | null;
 }) {
   const { t } = useI18n();
   const [viewMode, setViewMode] = useState<'preview' | 'code' | 'trailer'>('preview');
@@ -3568,27 +3572,35 @@ export function ArtifactBrowserPane({
             onOpenFilePath={onOpenFilePath}
           />
         ) : activeArtifact.kind === 'game-project' && (activeArtifact.projectId || activeArtifact.url) ? (
-          <GameProjectArtifactView
-            artifact={activeArtifact}
-            bundledMatch={bundledMatch}
-            communityMatch={communityMatch}
-            isTrial={isGameTrial}
-            chatId={chatId}
-            mode={isGameTrial ? 'preview' : viewMode}
-            viewport={viewport}
-            reloadKey={reloadKey}
-            requestedCodeFile={requestedCodeFile?.artifactId === activeArtifact.id ? requestedCodeFile : null}
-            annotateActive={supportsAnnotate && annotateActive}
-            annotTool={annotTool}
-            onToolChange={setAnnotTool}
-            onConsoleEntry={pushPreviewConsoleEntry}
-            captureRef={previewCaptureRef}
-            onSubmitAnnotation={handleSubmitBrowserAnnotation}
-            onCloseAnnotate={() => setAnnotateActive(false)}
-            onNotify={onNotify}
-            onGameMeta={meta => setGameMetaEntry({ artifactId: activeArtifact.id, ...meta })}
-            onBackgroundLoadingChange={setGameFrameBackgroundLoading}
-          />
+          (() => {
+            const gameView = (
+              <GameProjectArtifactView
+                artifact={activeArtifact}
+                bundledMatch={bundledMatch}
+                communityMatch={communityMatch}
+                isTrial={isGameTrial}
+                chatId={chatId}
+                mode={isGameTrial ? 'preview' : viewMode}
+                viewport={viewport}
+                reloadKey={reloadKey}
+                requestedCodeFile={requestedCodeFile?.artifactId === activeArtifact.id ? requestedCodeFile : null}
+                annotateActive={supportsAnnotate && annotateActive}
+                annotTool={annotTool}
+                onToolChange={setAnnotTool}
+                onConsoleEntry={pushPreviewConsoleEntry}
+                captureRef={previewCaptureRef}
+                onSubmitAnnotation={handleSubmitBrowserAnnotation}
+                onCloseAnnotate={() => setAnnotateActive(false)}
+                onNotify={onNotify}
+                onGameMeta={meta => setGameMetaEntry({ artifactId: activeArtifact.id, ...meta })}
+                onBackgroundLoadingChange={setGameFrameBackgroundLoading}
+              />
+            );
+            // The workspace only passes templateFeed while the active tab is a template from the showcase list.
+            return templateFeed && (isGameTrial || viewMode === 'preview')
+              ? <TemplateFeedStage feed={templateFeed}>{gameView}</TemplateFeedStage>
+              : gameView;
+          })()
         ) : activeArtifact.kind === 'web' && activeArtifact.url && chatId ? (
           <div className="om-sa-web-stage">
             <div className="om-sa-web-stage-main" data-framed={Boolean(fixedViewport) || undefined}>

@@ -43,6 +43,8 @@ import { notifyAgentsChanged, useLocalAgents } from '../motion/useLocalAgents';
 import { preloadableLazyWithChunkReload } from '../utils/chunkReload';
 import { savedPermissionMode, savePermissionMode, useFollowUpBehavior } from '../utils/superAgentPreferences';
 import { ConversationSidebar } from './ConversationSidebar';
+import { templateFeedPosition, type TemplateFeedDirection } from './templateFeed';
+import type { TemplateFeedControls } from './TemplateFeedRail';
 import { useReadTaskResults } from './useReadTaskResults';
 import type { ComposerCommandId } from './ComposerMentionMenu';
 import { ConversationStream, type AgentSelection } from './ConversationStream';
@@ -314,6 +316,7 @@ export function SuperAgentWorkspace({
   onOpenDesignProject,
   onOpenMotionProject,
   onOpenGameStudio,
+  onActiveTemplateGameChange,
   onOpenAsset,
   onOpenBrandKit,
   onOpenAgentSettings,
@@ -333,6 +336,8 @@ export function SuperAgentWorkspace({
   onOpenDesignProject: (projectId: string) => void;
   onOpenMotionProject: (projectId: string) => void;
   onOpenGameStudio?: (gameId?: string) => void;
+  /** Keeps the route in sync with the template shown in the preview, so a reload lands on it. */
+  onActiveTemplateGameChange?: (gameId: string | null) => void;
   onOpenAsset: (assetId: string, versionId?: string) => void;
   onOpenBrandKit: (kitId?: string) => void;
   onOpenAgentSettings: () => void;
@@ -440,6 +445,8 @@ export function SuperAgentWorkspace({
   const [pendingDeployArtifactId, setPendingDeployArtifactId] = useState<string | null>(null);
   const [pendingCodeFile, setPendingCodeFile] = useState<{ artifactId: string; filePath: string; seq: number } | null>(null);
   const handledRequestedGameRef = useRef<string | null>(null);
+  // Set while the preview is writing its template into the route; undefined when nothing is pending.
+  const pendingRouteGameRef = useRef<string | null | undefined>(undefined);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const sidebarDockedRef = useRef(true);
@@ -1644,6 +1651,15 @@ export function SuperAgentWorkspace({
   }, [locale, showToast, t]);
 
   useEffect(() => {
+    const pending = pendingRouteGameRef.current;
+    if (pending !== undefined) {
+      // The preview wrote this game into the route itself; a stale route value must not reopen the old one.
+      if (pending === requestedGameId) {
+        pendingRouteGameRef.current = undefined;
+        handledRequestedGameRef.current = requestedGameId;
+      }
+      return;
+    }
     if (!active || !requestedGameId) {
       if (!requestedGameId) handledRequestedGameRef.current = null;
       return;
@@ -1680,6 +1696,59 @@ export function SuperAgentWorkspace({
     if (current.projectId) return current.projectId;
     return current.id.startsWith('game:') ? current.id.slice('game:'.length) : null;
   }, [viewerOpen, activeTabId, viewerArtifacts]);
+
+  // Template feed: the showcase reports its current order; the preview steps through it.
+  const [templateFeedGames, setTemplateFeedGames] = useState<GameCard[]>([]);
+  const templateFeedIds = useMemo(() => templateFeedGames.map(game => game.id), [templateFeedGames]);
+  const templateFeedPos = useMemo(
+    () => templateFeedPosition(templateFeedIds, playingGameId),
+    [templateFeedIds, playingGameId],
+  );
+  const templateStepLockRef = useRef(false);
+  const stepTemplateFeed = useCallback(async (direction: TemplateFeedDirection) => {
+    if (!templateFeedPos || templateStepLockRef.current) return;
+    const targetId = direction < 0 ? templateFeedPos.prevId : templateFeedPos.nextId;
+    const target = targetId ? templateFeedGames.find(game => game.id === targetId) : undefined;
+    if (!target) return;
+    templateStepLockRef.current = true;
+    const fromTabId = activeTabId;
+    try {
+      const openedId = await handlePlayGame(target);
+      // Swiping replaces the template tab instead of piling up one tab per template.
+      if (openedId && openedId !== fromTabId) {
+        previewArtifactIdsRef.current.delete(fromTabId);
+        setPreviewArtifacts(prev => prev.filter(item => item.id !== fromTabId));
+        setOpenTabIds(prev => prev.filter(id => id !== fromTabId));
+      }
+    } finally {
+      // One template per gesture: hold briefly so a key repeat or double click cannot skip ahead.
+      window.setTimeout(() => { templateStepLockRef.current = false; }, 350);
+    }
+  }, [activeTabId, handlePlayGame, templateFeedGames, templateFeedPos]);
+  const templateFeedControls = useMemo<TemplateFeedControls | null>(() => (
+    templateFeedPos
+      ? { position: templateFeedPos, placement: narrow ? 'bottom' : 'side', onStep: direction => void stepTemplateFeed(direction) }
+      : null
+  ), [narrow, stepTemplateFeed, templateFeedPos]);
+
+  // Mirror the shown template into the route (replace, no history entry) so a reload reopens it.
+  const syncedTemplateGameRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!active || !onActiveTemplateGameChange) return;
+    const shown = playingGameId && templateFeedIds.includes(playingGameId) ? playingGameId : null;
+    if (shown) {
+      if (syncedTemplateGameRef.current === shown) return;
+      syncedTemplateGameRef.current = shown;
+      if (requestedGameId === shown) return;
+      pendingRouteGameRef.current = shown;
+      onActiveTemplateGameChange(shown);
+    } else if (syncedTemplateGameRef.current && requestedGameId === syncedTemplateGameRef.current) {
+      // The template preview closed or moved off the list: drop it from the route.
+      syncedTemplateGameRef.current = null;
+      pendingRouteGameRef.current = null;
+      onActiveTemplateGameChange(null);
+    }
+  }, [active, onActiveTemplateGameChange, playingGameId, requestedGameId, templateFeedIds]);
 
   const handleCloseTab = (tabId: string) => {
     const target = viewerArtifacts.find(item => item.id === tabId);
@@ -2206,6 +2275,7 @@ export function SuperAgentWorkspace({
             onChangeRequestedMode={onChangeRequestedMode}
             onPlayGame={game => void handlePlayGame(game)}
             onDeployGame={game => void handleDeployGame(game)}
+            onGameFeedChange={setTemplateFeedGames}
             onRetryLoad={() => setChatRetry(value => value + 1)}
             onOpenSidebar={() => setSidebarOpen(true)}
             onToggleViewer={() => {
@@ -2373,6 +2443,7 @@ export function SuperAgentWorkspace({
               onOpenInGameStudio={onOpenGameStudio}
               onOpenInAssets={onOpenAsset}
               onOpenInBrandKit={onOpenBrandKit}
+              templateFeed={templateFeedControls}
             />
           </Suspense>
         </div>
