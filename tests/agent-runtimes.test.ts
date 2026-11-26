@@ -64,6 +64,13 @@ test('standalone bridge script passes node --check, embeds all 29 Agents, and in
     assert.ok(script.includes(JSON.stringify(agent.id)), `Missing agent ID in bridge script: ${agent.id}`);
   }
 
+  // The bridge keeps its own copy of the shim rules: Windows npm shims for CLIs with a native
+  // binary must resolve to the executable, and chained shell shims must stay refused.
+  assert.ok(script.includes('[cm]?js|exe'), 'bridge shim resolution must accept native .exe targets');
+  assert.ok(script.includes('.exe$/i.test(relative)'), 'bridge shim resolution must spawn the native executable directly');
+  assert.ok(script.includes('return { bin: target, args }'), 'bridge shim resolution must spawn the resolved target');
+  assert.ok(script.includes("throw new Error('Unsupported CLI shim; use the official executable')"));
+
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'openmotion-bridge-syntax-'));
   try {
     const file = path.join(tmpDir, 'openmotion-agent-bridge.mjs');
