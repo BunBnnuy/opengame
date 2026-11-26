@@ -10,7 +10,9 @@ import { promisify } from 'node:util';
 import {
   applySourceUpdate,
   backupBuildOutputs,
+  defaultShutdownIdleBackend,
   restoreBuildOutputs,
+  shutdownPreviewService,
   checkSourceUpdate,
   classifyChangedFiles,
   compactRuntimeUpdateNotice,
@@ -999,6 +1001,148 @@ test('restoreBuildOutputs retains backup directory when a restore move fails and
   assert.equal(fullOk, true);
   assert.equal(await readFile(path.join(checkout, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
   assert.equal(existsSync(backups.rootDir), false);
+});
+
+test('applySourceUpdate aborts without overwriting tracked edits saved during git fetch', async t => {
+  const { upstreamWork, checkout, dataDir, fakeHome } = await createGitFixtures(t);
+
+  await writeFile(path.join(upstreamWork, 'README.md'), '# upstream v2\n');
+  await runGit(upstreamWork, ['add', 'README.md']);
+  await runGit(upstreamWork, ['commit', '-m', 'update readme']);
+  await runGit(upstreamWork, ['push', 'origin', 'main']);
+
+  const before = await runGit(checkout, ['rev-parse', 'HEAD']);
+  let mutatedDuringFetch = false;
+
+  const result = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    homeDirectory: fakeHome,
+    restartBackend: false,
+    exec: async (file, args, options) => {
+      const { stdout, stderr } = await execFileAsync(file, [...args], {
+        cwd: options?.cwd,
+        env: options?.env,
+      });
+      if (file === 'git' && args.includes('fetch') && !mutatedDuringFetch) {
+        mutatedDuringFetch = true;
+        await writeFile(path.join(checkout, 'README.md'), '# local edit saved mid-fetch\n');
+      }
+      return { stdout: String(stdout ?? ''), stderr: String(stderr ?? '') };
+    },
+  });
+
+  assert.equal(mutatedDuringFetch, true);
+  assert.equal(result.status, 'dirty_worktree');
+  assert.equal(result.updated, false);
+  assert.equal(result.currentCommit, before);
+  assert.equal(await runGit(checkout, ['rev-parse', 'HEAD']), before);
+  assert.equal(await readFile(path.join(checkout, 'README.md'), 'utf8'), '# local edit saved mid-fetch\n');
+  assert.ok(result.dirtyFiles?.includes('README.md'));
+});
+
+test('non-macOS backend shutdown stops matching idle preview service, defers when busy or unmanaged, and ignores unrelated servers', async t => {
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'om-preview-shutdown-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  // 1) Idle matching preview service with valid PID -> SIGTERM + waits for shutdown -> restarted: true
+  const dataIdle = path.join(root, 'idle');
+  await mkdir(dataIdle, { recursive: true });
+  const idleServer = createServer((req, res) => {
+    if (req.url === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        service: 'motion-preview',
+        protocol: 2,
+        dataDirectory: dataIdle,
+        activeWork: false,
+      }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>(resolve => idleServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    idleServer.closeAllConnections();
+    idleServer.close();
+  });
+  const idlePort = (idleServer.address() as { port: number }).port;
+  await writeFile(path.join(dataIdle, 'preview.json'), JSON.stringify({ port: idlePort, pid: 424242, version: '0.0.1' }));
+
+  const killed: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+  const idleOutcome = await defaultShutdownIdleBackend(dataIdle, {
+    useSharedEditor: false,
+    previewDeps: {
+      killProcess: (pid, signal) => {
+        killed.push({ pid, signal });
+        idleServer.closeAllConnections();
+        idleServer.close();
+      },
+      waitMs: 1_500,
+      pollIntervalMs: 25,
+    },
+  });
+  assert.deepEqual(idleOutcome, { restarted: true, deferred: false });
+  assert.deepEqual(killed, [{ pid: 424242, signal: 'SIGTERM' }]);
+
+  // 2) Busy matching preview service (activeWork: true) -> never kills, defers restart
+  const dataBusy = path.join(root, 'busy');
+  await mkdir(dataBusy, { recursive: true });
+  const busyServer = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ service: 'motion-preview', dataDirectory: dataBusy, activeWork: true }));
+  });
+  await new Promise<void>(resolve => busyServer.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    busyServer.closeAllConnections();
+    busyServer.close();
+  });
+  const busyPort = (busyServer.address() as { port: number }).port;
+  await writeFile(path.join(dataBusy, 'preview.json'), JSON.stringify({ port: busyPort, pid: 525252 }));
+
+  const busyKills: number[] = [];
+  const busyOutcome = await shutdownPreviewService(dataBusy, {
+    killProcess: pid => { busyKills.push(pid); },
+    waitMs: 200,
+  });
+  assert.deepEqual(busyOutcome, { restarted: false, deferred: true });
+  assert.deepEqual(busyKills, []);
+
+  // 3) Matching live preview service with no PID recorded -> defers restart without killing
+  await writeFile(path.join(dataBusy, 'preview.json'), JSON.stringify({ port: busyPort }));
+  const noPidOutcome = await shutdownPreviewService(dataBusy, {
+    probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataBusy, activeWork: false }),
+    killProcess: pid => { busyKills.push(pid); },
+  });
+  assert.deepEqual(noPidOutcome, { restarted: false, deferred: true });
+  assert.deepEqual(busyKills, []);
+
+  // 4) Different workspace or unrelated service on registered port -> ignored without killing
+  const otherOutcome = await shutdownPreviewService(dataBusy, {
+    probeHealth: async () => ({ service: 'motion-preview', dataDirectory: path.join(root, 'someone-else'), activeWork: false }),
+    killProcess: pid => { busyKills.push(pid); },
+  });
+  assert.deepEqual(otherOutcome, { restarted: false, deferred: false });
+  assert.deepEqual(busyKills, []);
+});
+
+test('scripts/build-template-guide.mjs is hashed by source-build-state and triggers Studio rebuild classification', async t => {
+  const { sourceBuildCurrent, recordSourceBuild, SOURCE_BUILD_INPUTS } = await import('../scripts/source-build-state.mjs');
+  assert.ok(SOURCE_BUILD_INPUTS.includes('scripts/build-template-guide.mjs'));
+  assert.equal(classifyChangedFiles(['scripts/build-template-guide.mjs']).studioInputChanged, true);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'om-guide-input-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(path.join(root, 'studio/build'), { recursive: true });
+  await mkdir(path.join(root, 'scripts'), { recursive: true });
+  await writeFile(path.join(root, 'studio/build/index.html'), '<html>ok</html>');
+  await writeFile(path.join(root, 'scripts/build-template-guide.mjs'), 'export const v = 1;');
+  await recordSourceBuild(root);
+  assert.equal(await sourceBuildCurrent(root), true);
+
+  await writeFile(path.join(root, 'scripts/build-template-guide.mjs'), 'export const v = 2;');
+  assert.equal(await sourceBuildCurrent(root), false);
 });
 
 test('syncInstalledHostSkills does not create missing host directories', async t => {

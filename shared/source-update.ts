@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { editorRequest, readEditor, sharedEditorEnabled } from '../editor-runtime.ts';
+import { SOURCE_BUILD_INPUTS, SOURCE_BUILD_OUTPUTS } from '../scripts/source-build-state.mjs';
 import { withProcessLock } from './process-lock.ts';
 
 const execFileAsync = promisify(execFile);
@@ -45,25 +46,11 @@ const MCP_SCHEMA_FILES = new Set([
   'shared/project-management.ts',
 ]);
 
-const STUDIO_BUILD_INPUT_FILES = new Set([
-  'package.json',
-  'package-lock.json',
-  'scripts/diagnostic-redaction.mjs',
-  'scripts/build-inline-ui.mjs',
-  'scripts/build-template-cards.mjs',
-  'scripts/build-template-guide.mjs',
-  'scripts/source-build-state.mjs',
-]);
-
-const STUDIO_BUILD_INPUT_PREFIXES = [
-  'studio/',
-  'shared/',
-  'tracking/',
-  'packages/design-system/',
-  'packages/open-design-ui/',
-  'mcp-ui/',
-  'web/',
-] as const;
+function isStudioBuildInputPath(normalizedPath: string): boolean {
+  return SOURCE_BUILD_INPUTS.some(
+    entry => normalizedPath === entry || normalizedPath.startsWith(`${entry}/`),
+  );
+}
 
 const SYNCABLE_SKILLS = [
   'openmotion',
@@ -273,10 +260,7 @@ export function classifyChangedFiles(files: readonly string[]): ChangedFileClass
     }
     if (MCP_SCHEMA_FILES.has(file)) mcpSchemaChanged = true;
     if (file === 'package-lock.json') lockfileChanged = true;
-    if (
-      STUDIO_BUILD_INPUT_FILES.has(file)
-      || STUDIO_BUILD_INPUT_PREFIXES.some(prefix => file.startsWith(prefix))
-    ) {
+    if (isStudioBuildInputPath(file)) {
       studioInputChanged = true;
     }
   }
@@ -753,8 +737,117 @@ export async function syncInstalledHostSkills(
   return synced;
 }
 
-async function defaultShutdownIdleBackend(dataDirectory: string): Promise<{ restarted: boolean; deferred: boolean }> {
-  if (!sharedEditorEnabled) return { restarted: false, deferred: false };
+type PreviewHealthProbe = {
+  service?: string;
+  dataDirectory?: string;
+  activeWork?: boolean;
+};
+
+export type PreviewShutdownDeps = {
+  probeHealth?: (port: number) => Promise<PreviewHealthProbe | null>;
+  killProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  waitMs?: number;
+  pollIntervalMs?: number;
+};
+
+async function normalizeDirectoryForCompare(dir: string): Promise<string> {
+  const resolved = await realpath(dir).catch(() => path.resolve(dir));
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
+  try {
+    const job = JSON.parse(await readFile(path.join(dataDirectory, 'job.json'), 'utf8'));
+    return typeof job?.state === 'string' && ['pending', 'running', 'cancelling'].includes(job.state);
+  } catch {
+    return false;
+  }
+}
+
+export async function shutdownPreviewService(
+  dataDirectory: string,
+  deps: PreviewShutdownDeps = {},
+): Promise<{ restarted: boolean; deferred: boolean }> {
+  const resolvedDataDir = path.resolve(dataDirectory);
+  let registration: { port?: unknown; pid?: unknown };
+  try {
+    registration = JSON.parse(await readFile(path.join(resolvedDataDir, 'preview.json'), 'utf8'));
+  } catch {
+    return { restarted: false, deferred: false };
+  }
+  const port = registration?.port;
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
+    return { restarted: false, deferred: false };
+  }
+
+  const probeHealth = deps.probeHealth ?? (async (targetPort: number): Promise<PreviewHealthProbe | null> => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${targetPort}/api/health`, {
+        signal: AbortSignal.timeout(1_200),
+      });
+      if (!response.ok) return null;
+      return await response.json() as PreviewHealthProbe;
+    } catch {
+      return null;
+    }
+  });
+
+  const expectedDataDir = await normalizeDirectoryForCompare(resolvedDataDir);
+  const matchesWorkspace = async (health: PreviewHealthProbe | null): Promise<boolean> => {
+    if (!health || health.service !== 'motion-preview' || typeof health.dataDirectory !== 'string') {
+      return false;
+    }
+    return (await normalizeDirectoryForCompare(health.dataDirectory)) === expectedDataDir;
+  };
+
+  const health = await probeHealth(port);
+  if (!(await matchesWorkspace(health))) {
+    return { restarted: false, deferred: false };
+  }
+
+  if (health?.activeWork === true || await hasActiveWorkspaceJob(resolvedDataDir)) {
+    return { restarted: false, deferred: true };
+  }
+
+  const pid = registration?.pid;
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1 || pid === process.pid) {
+    // Live server belongs to this workspace, but no safe external PID is available to stop.
+    return { restarted: false, deferred: true };
+  }
+
+  const killProcess = deps.killProcess ?? ((targetPid: number, signal: NodeJS.Signals) => {
+    process.kill(targetPid, signal);
+  });
+
+  try {
+    killProcess(pid, 'SIGTERM');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code !== 'ESRCH') {
+      return { restarted: false, deferred: true };
+    }
+  }
+
+  const deadline = Date.now() + (deps.waitMs ?? 3_000);
+  const pollInterval = deps.pollIntervalMs ?? 100;
+  while (Date.now() <= deadline) {
+    const stillUp = await probeHealth(port);
+    if (!(await matchesWorkspace(stillUp))) {
+      return { restarted: true, deferred: false };
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+  }
+  return { restarted: false, deferred: true };
+}
+
+export async function defaultShutdownIdleBackend(
+  dataDirectory: string,
+  options: { useSharedEditor?: boolean; previewDeps?: PreviewShutdownDeps } = {},
+): Promise<{ restarted: boolean; deferred: boolean }> {
+  const useSharedEditor = options.useSharedEditor ?? sharedEditorEnabled;
+  if (!useSharedEditor) {
+    return shutdownPreviewService(dataDirectory, options.previewDeps);
+  }
   const editor = await readEditor(dataDirectory).catch(() => null);
   if (!editor) return { restarted: false, deferred: false };
   try {
@@ -773,11 +866,7 @@ async function defaultShutdownIdleBackend(dataDirectory: string): Promise<{ rest
   return { restarted: false, deferred: true };
 }
 
-const BUILD_OUTPUT_RELATIVE_PATHS = [
-  'studio/build',
-  'mcp-ui/template-recommendations/build',
-  'web/inline-video.html',
-] as const;
+const BUILD_OUTPUT_RELATIVE_PATHS = SOURCE_BUILD_OUTPUTS;
 
 export type BuildOutputBackupSet = {
   rootDir: string;
@@ -885,14 +974,17 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
   const lockPath = path.join(options.dataDirectory, UPDATE_LOCK_FILENAME);
 
   return withProcessLock(lockPath, async () => {
-    const statusResult = await runGit(
-      exec,
-      repoRoot,
-      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
-      env,
-      10_000,
-    );
-    const dirtyFiles = parseDirtyWorktreeFiles(statusResult.stdout);
+    const readDirtyWorktreeFiles = async () => {
+      const statusResult = await runGit(
+        exec,
+        repoRoot,
+        ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+        env,
+        10_000,
+      );
+      return parseDirtyWorktreeFiles(statusResult.stdout);
+    };
+    const dirtyFiles = await readDirtyWorktreeFiles();
     if (dirtyFiles.length > 0) {
       await writeUpdateState(options.dataDirectory, {
         lastCheckedAt: now,
@@ -1086,6 +1178,30 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       changedFiles = ['package-lock.json', 'studio/index.html', 'skills/openmotion-game/SKILL.md'];
     }
     const classification = classifyChangedFiles(changedFiles);
+
+    // Re-check worktree cleanliness immediately before reset --hard so edits saved
+    // while git fetch was in flight are never discarded.
+    const dirtyBeforeReset = await readDirtyWorktreeFiles();
+    if (dirtyBeforeReset.length > 0) {
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: now,
+        lastAttemptAt: now,
+        lastStatus: 'dirty_worktree',
+        currentCommit: previousCommit,
+        remoteCommit: targetCommit,
+        branch,
+        lastError: undefined,
+      }).catch(() => {});
+      return {
+        status: 'dirty_worktree',
+        updated: false,
+        reason: 'Local modifications detected before applying update',
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+        dirtyFiles: dirtyBeforeReset,
+      };
+    }
 
     await runGit(exec, repoRoot, ['reset', '--hard', targetCommit], env, 30_000);
 
