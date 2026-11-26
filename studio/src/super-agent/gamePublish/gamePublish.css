@@ -603,7 +603,7 @@
 .om-gp-post-signin-copy { display: flex; flex-direction: column; gap: 2px; }
 .om-gp-post-signin-copy strong { font-size: var(--motion-text-xs); font-weight: var(--motion-weight-semibold); color: var(--motion-text); }
 .om-gp-post-signin-copy span { font-size: var(--motion-text-xs); line-height: 1.45; }
-.om-gp-post-signin-btn { gap: var(--motion-space-6); height: 30px; font-size: var(--motion-text-xs); }
+.om-gp-post-signin-btn { gap: var(--motion-space-6); font-size: var(--motion-text-xs); }
 .om-gp-od-icon { background: var(--motion-strong); color: var(--motion-bg); }
 .om-gp-od-line { display: flex; align-items: center; gap: var(--motion-space-8); margin-top: var(--motion-space-12); color: var(--motion-muted); font-size: var(--motion-text-xs); }
 .om-gp-od-line-text { display: flex; align-items: center; gap: var(--motion-space-6); min-width: 0; flex: 1; overflow-wrap: anywhere; cursor: pointer; }

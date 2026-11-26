@@ -4,13 +4,13 @@
  * State lives in memory for the session; persisting it is a backend task.
  *
  * Only real work is reported as done: the OpenDesign link (webPublishClient) and packages built
- * in the browser. Steps in platform consoles move on when the user says they are done, and the
- * conversation records it in the user's words.
+ * in the browser. WeChat Mini Game is guided by the Agent via openmotion_game_wechat; all other
+ * platforms advance instantaneously through local inline step controls and record completion locally.
  */
 import { useSyncExternalStore } from 'react';
 import { buildPlatformZip, buildPlayable, gameSlug, loadGameHtml, type GamePackageResult, type GamePackageTarget } from './gamePackage';
 import { describeLinkError, publishGameLink, type GamePublishLinkTarget } from './gamePublishAdapter';
-import { gamePublishDevTool, type GamePublishDevToolId } from './devTools';
+import type { GamePublishDevToolId } from './devTools';
 import { gamePublishPlatform, storeLinkProblem, type GamePublishPlatform, type GamePublishPlatformId, type GamePublishStep } from './platforms';
 import { queueSuperAgentHandoff } from '../../motion/superAgentHandoff';
 import { wechatClient, type WechatPublishStatus } from './wechatClient';
@@ -71,9 +71,11 @@ export interface GamePublishSession {
   wechat?: GamePublishWechatState;
 }
 
+export type GamePublishWorkKind = 'link' | 'package' | 'wechat-key';
+
 export type GamePublishThreadEntry =
   | { id: string; artifactId: string; kind: 'user'; key: string; name?: string }
-  | { id: string; artifactId: string; kind: 'agent'; title: string; name?: string; lines: Array<{ text: string; vars?: Record<string, string | number>; done: boolean }>; failed?: boolean; packageResult?: GamePackageResult }
+  | { id: string; artifactId: string; kind: 'agent'; work: GamePublishWorkKind; title: string; name?: string; lines: Array<{ text: string; vars?: Record<string, string | number>; done: boolean }>; failed?: boolean; packageResult?: GamePackageResult }
   | { id: string; artifactId: string; kind: 'result'; title: string; detail: string; vars?: Record<string, string>; action?: string; href?: string; link?: boolean }
   | { id: string; artifactId: string; kind: 'link-failed'; message: string; authRequired: boolean; closed: boolean }
   ;
@@ -125,17 +127,17 @@ function removeEntries(session: GamePublishSession, predicate: (entry: GamePubli
 }
 
 function isLinkFailureEntry(entry: GamePublishThreadEntry) {
-  return entry.kind === 'link-failed' || (entry.kind === 'agent' && entry.title === 'Publishing on OpenDesign' && Boolean(entry.failed));
+  return entry.kind === 'link-failed' || (entry.kind === 'agent' && entry.work === 'link' && Boolean(entry.failed));
 }
 
 function isPackageWorkEntry(entry: GamePublishThreadEntry) {
-  return entry.kind === 'agent' && entry.title === 'Building the {name} package';
+  return entry.kind === 'agent' && entry.work === 'package';
 }
 
 /** A conversation block for real work; lines are added as each part actually finishes. */
-function startWork(artifactId: string, title: string, name?: string) {
+function startWork(artifactId: string, work: GamePublishWorkKind, title: string, name?: string) {
   const session = sessions.get(artifactId)!;
-  const id = pushEntry(session, { kind: 'agent', title, name, lines: [] });
+  const id = pushEntry(session, { kind: 'agent', work, title, name, lines: [] });
   const edit = (change: (entry: Extract<GamePublishThreadEntry, { kind: 'agent' }>) => Extract<GamePublishThreadEntry, { kind: 'agent' }>) => {
     const latest = sessions.get(artifactId);
     if (latest) patchEntries(latest, entry => (entry.id === id && entry.kind === 'agent' ? change(entry) : entry));
@@ -263,7 +265,7 @@ export const gamePublishActions = {
       return;
     }
     update(artifactId, { linkPublishing: true, linkError: undefined });
-    const work = startWork(artifactId, 'Publishing on OpenDesign');
+    const work = startWork(artifactId, 'link', 'Publishing on OpenDesign');
     try {
       const { url } = await publishGameLink(session.link);
       work.line('The game link is published');
@@ -274,7 +276,7 @@ export const gamePublishActions = {
       if (linkError.authRequired) {
         // Keep the thread clean: the link-failed card renders the localized sign-in action without raw English error logs.
         const latest = sessions.get(artifactId);
-        if (latest) removeEntries(latest, entry => entry.kind === 'agent' && entry.title === 'Publishing on OpenDesign' && !entry.lines.length);
+        if (latest) removeEntries(latest, entry => entry.kind === 'agent' && entry.work === 'link' && !entry.lines.length);
       } else {
         work.fail('Publishing failed: {message}', { message: linkError.message });
       }
@@ -355,7 +357,7 @@ export const gamePublishActions = {
     const run = platformRuns.get(artifactId);
     const isCurrent = () => platformRuns.get(artifactId) === run;
     update(artifactId, { package: { state: 'building', target }, status: { tone: 'running', key: 'Building the package' } });
-    const work = startWork(artifactId, 'Building the {name} package', target === 'playable' ? session.picked ?? platform.name : platform.name);
+    const work = startWork(artifactId, 'package', 'Building the {name} package', target === 'playable' ? session.picked ?? platform.name : platform.name);
     try {
       const loaded = await loadGameHtml(session.gameId);
       work.line(loaded.missing.length ? 'Read the game; {count} local file(s) could not be read' : 'Read the game and inlined {count} local file(s)', { count: loaded.missing.length || loaded.inlined });
@@ -435,7 +437,7 @@ export const gamePublishActions = {
       await wechatClient.saveKey(appid, privateKey);
       patchWechat(artifactId, { keySaving: false });
       // Only this line goes into the conversation; the key itself never does (and never reaches the Agent).
-      startWork(artifactId, 'Saved the upload key').line('Saved on this computer for {appid}; the conversation keeps no copy', { appid });
+      startWork(artifactId, 'wechat-key', 'Saved the upload key').line('Saved on this computer for {appid}; the conversation keeps no copy', { appid });
       await gamePublishActions.refreshWechat(artifactId);
     } catch (error) {
       patchWechat(artifactId, { keySaving: false, keyError: error instanceof Error ? error.message : String(error) });

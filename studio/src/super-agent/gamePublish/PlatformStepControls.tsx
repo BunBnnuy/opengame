@@ -13,8 +13,8 @@ import './gamePublish.css';
 type Notify = (message: string, tone?: 'info' | 'error') => void;
 
 /**
- * Platforms other than WeChat, right-hand panel: only where things stand. The Agent guides each step in the
- * conversation; the page puts that step's controls under its message (PlatformInlineControls).
+ * Platforms other than WeChat, right-hand panel: live step progress overview.
+ * Interactive controls for the current step are rendered inline in the publish thread (PlatformInlineControls).
  */
 export function PlatformProgress({ session }: { session: GamePublishSession }) {
   const { t } = useI18n();
@@ -52,9 +52,9 @@ export function PlatformProgress({ session }: { session: GamePublishSession }) {
 }
 
 /**
- * In the conversation, under the Agent's message: the controls of the current step (developer tool, choices,
- * store links, package download, OpenDesign link, platform pages) and the button that finishes it. Pressing it
- * tells the Agent in the conversation, so the Agent moves on to the next step. Rendered by the page.
+ * Inline controls for the current publish step (developer tool check, choices, store links,
+ * one-click package download, OpenDesign link sign-in, platform links, and step completion CTA).
+ * Advances the local publish store directly without queueing extra Agent turns.
  */
 export function PlatformInlineControls({ session, onNotify }: { session: GamePublishSession; onNotify?: Notify }) {
   const { t } = useI18n();

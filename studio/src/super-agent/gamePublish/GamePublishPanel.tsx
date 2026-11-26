@@ -67,7 +67,7 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
         })),
       ]}
       onChange={id => {
-        if (id) gamePublishActions.choose(artifactId, id, account ? { signedIn: account.state === 'signed-in' } : undefined);
+        if (id) gamePublishActions.choose(artifactId, id, { signedIn: account?.state === 'signed-in' });
       }}
     />
   );
