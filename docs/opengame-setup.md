@@ -81,6 +81,13 @@ Validate and play-test it, then give me its local play link.
 
 The game service exposes creation, reading, file edits, metadata, validation, simulation, play-testing, cover capture, status, local publication and gameplay trailers. See the current [tool schemas](../shared/game-tools.ts) for exact names and inputs.
 
+## Staying up to date
+
+When running from a clean Git checkout on `main`, creation and generation calls across OpenGame and OpenMotion (`openmotion_game_create`, `openmotion_create_project`, `openmotion_design_project` with `action: "create"`, `openmotion_capability_run` without `dryRun`, and `openmotion_assets_use` / `openmotion_media_use` with `action: "generate"`) share a single 24-hour check window in `MOTION_DATA_DIR/.update-check.json` and silently apply newer `origin/main` commits before running. Dependencies and Studio assets are rebuilt only when their input fingerprints change, local copies of installed Skills are refreshed, an idle editor daemon is restarted cleanly, and any build failure rolls back automatically to the previous commit.
+
+- **Manual update anytime:** run `npm run update` (or `node --experimental-strip-types scripts/update.ts --apply`) from the checkout root. Use `--check` to inspect status without applying changes.
+- **Disable automatic checks:** set `OPENMOTION_AUTO_UPDATE=0` in the MCP server's `env` block. Local edits or non-`main` branches are never overwritten automatically.
+
 ## Generation and sharing
 
 Configure only the providers you intend to use. Available models are discovered from the connected environment; paid image, music or voice generation uses the selected provider or account balance. See the [media workflow](../skills/openmotion-media/SKILL.md).

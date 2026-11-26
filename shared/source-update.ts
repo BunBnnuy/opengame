@@ -1,0 +1,992 @@
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { editorRequest, readEditor, sharedEditorEnabled } from '../editor-runtime.ts';
+import { withProcessLock } from './process-lock.ts';
+
+const execFileAsync = promisify(execFile);
+
+export const DEFAULT_UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const ERROR_RETRY_BACKOFF_MS = 60 * 60 * 1000;
+export const DEFAULT_UPDATE_REMOTE = 'origin';
+export const DEFAULT_UPDATE_BRANCH = 'main';
+export const UPDATE_STATE_FILENAME = '.update-check.json';
+export const UPDATE_LOCK_FILENAME = '.source-update.lock';
+
+const GIT_NO_LFS_ARGS = [
+  '-c', 'filter.lfs.process=',
+  '-c', 'filter.lfs.smudge=',
+  '-c', 'filter.lfs.required=false',
+] as const;
+
+const NPM_FALLBACK_REGISTRIES = [
+  'https://registry.npmjs.org',
+  'https://registry.npmmirror.com',
+] as const;
+
+/** Installer-created untracked paths that should not block a clean source update. */
+const IGNORED_UNTRACKED_PATHS = new Set([
+  '.agents/plugins/marketplace.json',
+]);
+
+const MCP_SCHEMA_FILES = new Set([
+  'shared/mcp-profiles.json',
+  'shared/mcp-registry.ts',
+  'shared/phase1-tools.ts',
+  'shared/game-tools.ts',
+  'shared/design-tools.ts',
+  'shared/asset-tools.ts',
+  'shared/capability-tools.ts',
+  'shared/project-archive.ts',
+  'shared/project-management.ts',
+]);
+
+const STUDIO_BUILD_INPUT_FILES = new Set([
+  'package.json',
+  'package-lock.json',
+  'scripts/diagnostic-redaction.mjs',
+  'scripts/build-inline-ui.mjs',
+  'scripts/build-template-cards.mjs',
+  'scripts/build-template-guide.mjs',
+  'scripts/source-build-state.mjs',
+]);
+
+const STUDIO_BUILD_INPUT_PREFIXES = [
+  'studio/',
+  'shared/',
+  'tracking/',
+  'packages/design-system/',
+  'packages/open-design-ui/',
+  'mcp-ui/',
+  'web/',
+] as const;
+
+const SYNCABLE_SKILLS = [
+  'openmotion',
+  'openmotion-game',
+  'openmotion-production',
+  'openmotion-director',
+  'openmotion-media',
+  'openmotion-design',
+  'openmotion-recreate',
+  'openmotion-template-to-video',
+  'openmotion-video-to-template',
+] as const;
+
+export type ExecCommandOptions = {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  timeout?: number;
+  maxBuffer?: number;
+};
+
+export type ExecCommandResult = {
+  stdout: string;
+  stderr: string;
+};
+
+export type ExecRunner = (
+  file: string,
+  args: readonly string[],
+  options?: ExecCommandOptions,
+) => Promise<ExecCommandResult>;
+
+export type SourceUpdateState = {
+  schemaVersion: 1;
+  lastCheckedAt?: number;
+  lastAttemptAt?: number;
+  lastUpdatedAt?: number;
+  lastStatus?: string;
+  currentCommit?: string;
+  remoteCommit?: string;
+  branch?: string;
+  lastError?: string;
+};
+
+export type SourceEligibilityResult = {
+  eligible: boolean;
+  status?: 'disabled' | 'unsupported' | 'non_target_branch';
+  reason?: string;
+  branch?: string;
+};
+
+export type SourceUpdateCheckResult = {
+  status:
+    | 'disabled'
+    | 'unsupported'
+    | 'non_target_branch'
+    | 'skipped_ttl'
+    | 'up_to_date'
+    | 'update_available'
+    | 'check_failed';
+  checked: boolean;
+  updateAvailable: boolean;
+  reason?: string;
+  branch?: string;
+  currentCommit?: string;
+  remoteCommit?: string;
+  lastCheckedAt?: number;
+  error?: string;
+};
+
+export type ChangedFileClassification = {
+  skillChanged: boolean;
+  gameSkillChanged: boolean;
+  changedSkills: string[];
+  mcpSchemaChanged: boolean;
+  studioInputChanged: boolean;
+  lockfileChanged: boolean;
+};
+
+export type SourceUpdateApplyResult = {
+  status:
+    | 'disabled'
+    | 'unsupported'
+    | 'non_target_branch'
+    | 'dirty_worktree'
+    | 'up_to_date'
+    | 'updated'
+    | 'failed_rolled_back'
+    | 'failed';
+  updated: boolean;
+  reason?: string;
+  branch?: string;
+  previousCommit?: string;
+  currentCommit?: string;
+  changedFilesCount?: number;
+  skillChanged?: boolean;
+  gameSkillChanged?: boolean;
+  changedSkills?: string[];
+  mcpSchemaChanged?: boolean;
+  depsInstalled?: boolean;
+  studioRebuilt?: boolean;
+  syncedSkills?: string[];
+  restarted?: boolean;
+  restartDeferred?: boolean;
+  rolledBack?: boolean;
+  dirtyFiles?: string[];
+  error?: string;
+};
+
+export type RuntimeUpdateNotice = {
+  status: 'updated';
+  previousCommit: string;
+  currentCommit: string;
+  skillChanged: boolean;
+  gameSkillChanged: boolean;
+  changedSkills: string[];
+  mcpSchemaChanged: boolean;
+  depsInstalled: boolean;
+  studioRebuilt: boolean;
+  restarted: boolean;
+  restartDeferred: boolean;
+};
+
+export type SourceUpdateOptions = {
+  repoRoot?: string;
+  dataDirectory: string;
+  force?: boolean;
+  automatic?: boolean;
+  remote?: string;
+  branch?: string;
+  intervalMs?: number;
+  now?: () => number;
+  env?: NodeJS.ProcessEnv;
+  homeDirectory?: string;
+  restartBackend?: boolean;
+  exec?: ExecRunner;
+  shutdownBackend?: (dataDirectory: string) => Promise<{ restarted: boolean; deferred: boolean }>;
+};
+
+const defaultRepoRoot = fileURLToPath(new URL('../', import.meta.url));
+
+async function defaultExec(
+  file: string,
+  args: readonly string[],
+  options: ExecCommandOptions = {},
+): Promise<ExecCommandResult> {
+  const result = await execFileAsync(file, [...args], {
+    cwd: options.cwd,
+    env: options.env,
+    timeout: options.timeout ?? 60_000,
+    maxBuffer: options.maxBuffer ?? 16 * 1024 * 1024,
+    windowsHide: true,
+  });
+  return {
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
+function normalizeRelativePath(value: string): string {
+  return value.replaceAll('\\', '/').replace(/^\.\//, '');
+}
+
+function parseAutoUpdateFlag(env: NodeJS.ProcessEnv): 'enabled' | 'disabled' | 'default' {
+  const raw = env.OPENMOTION_AUTO_UPDATE?.trim().toLowerCase();
+  if (!raw) return 'default';
+  if (['0', 'false', 'off', 'no'].includes(raw)) return 'disabled';
+  if (['1', 'true', 'on', 'yes'].includes(raw)) return 'enabled';
+  return 'default';
+}
+
+export function resolveCheckIntervalMs(env: NodeJS.ProcessEnv, override?: number): number {
+  if (typeof override === 'number' && Number.isFinite(override) && override >= 0) return override;
+  const raw = env.OPENMOTION_UPDATE_CHECK_INTERVAL_MS?.trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return DEFAULT_UPDATE_CHECK_INTERVAL_MS;
+}
+
+function isAutomatedTestRuntime(env: NodeJS.ProcessEnv): boolean {
+  return (
+    env.CI === 'true'
+    || env.CI === '1'
+    || Boolean(env.NODE_TEST_CONTEXT)
+    || process.execArgv.includes('--test')
+  );
+}
+
+export function classifyChangedFiles(files: readonly string[]): ChangedFileClassification {
+  let skillChanged = false;
+  let gameSkillChanged = false;
+  const changedSkills = new Set<string>();
+  let mcpSchemaChanged = false;
+  let studioInputChanged = false;
+  let lockfileChanged = false;
+
+  for (const raw of files) {
+    const file = normalizeRelativePath(raw);
+    if (!file) continue;
+    const skillMatch = /^skills\/([^/]+)\//.exec(file);
+    if (skillMatch) {
+      skillChanged = true;
+      changedSkills.add(skillMatch[1]);
+      if (skillMatch[1] === 'openmotion-game') gameSkillChanged = true;
+    }
+    if (MCP_SCHEMA_FILES.has(file)) mcpSchemaChanged = true;
+    if (file === 'package-lock.json') lockfileChanged = true;
+    if (
+      STUDIO_BUILD_INPUT_FILES.has(file)
+      || STUDIO_BUILD_INPUT_PREFIXES.some(prefix => file.startsWith(prefix))
+    ) {
+      studioInputChanged = true;
+    }
+  }
+
+  return {
+    skillChanged,
+    gameSkillChanged,
+    changedSkills: [...changedSkills].sort(),
+    mcpSchemaChanged,
+    studioInputChanged,
+    lockfileChanged,
+  };
+}
+
+/**
+ * Returns true when an MCP tool call starts a new creation or generation across
+ * any OpenMotion domain (game, video/motion, design, or multimodal media).
+ * Read-only queries, edits, polling, and dryRun probes never trigger checks.
+ */
+export function shouldAutoUpdateForToolCall(toolName: string, args: unknown): boolean {
+  const input = args && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : undefined;
+  switch (toolName) {
+    case 'openmotion_game_create':
+    case 'openmotion_create_project':
+      return true;
+    case 'openmotion_design_project':
+      return input?.action === 'create';
+    case 'openmotion_capability_run':
+      return input?.dryRun !== true;
+    case 'openmotion_assets_use':
+    case 'openmotion_assets':
+    case 'openmotion_media_use':
+      return input?.action === 'generate';
+    default:
+      return false;
+  }
+}
+
+export function isUpdateCheckFresh(
+  state: SourceUpdateState | null,
+  now: number,
+  intervalMs: number,
+): boolean {
+  if (!state) return false;
+  if (
+    typeof state.lastCheckedAt === 'number'
+    && Number.isFinite(state.lastCheckedAt)
+    && now >= state.lastCheckedAt
+    && now - state.lastCheckedAt < intervalMs
+  ) {
+    return true;
+  }
+  if (
+    state.lastStatus === 'check_failed'
+    && typeof state.lastAttemptAt === 'number'
+    && Number.isFinite(state.lastAttemptAt)
+    && now >= state.lastAttemptAt
+    && now - state.lastAttemptAt < Math.min(intervalMs, ERROR_RETRY_BACKOFF_MS)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export async function readUpdateState(dataDirectory: string): Promise<SourceUpdateState | null> {
+  const file = path.join(dataDirectory, UPDATE_STATE_FILENAME);
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || parsed.schemaVersion !== 1) return null;
+    return parsed as SourceUpdateState;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+export async function writeUpdateState(dataDirectory: string, patch: Partial<SourceUpdateState>): Promise<SourceUpdateState> {
+  await mkdir(dataDirectory, { recursive: true });
+  const existing = (await readUpdateState(dataDirectory).catch(() => null)) ?? { schemaVersion: 1 as const };
+  const next: SourceUpdateState = { ...existing, ...patch, schemaVersion: 1 };
+  const file = path.join(dataDirectory, UPDATE_STATE_FILENAME);
+  const temporary = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+    await rename(temporary, file);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+  return next;
+}
+
+function gitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_LFS_SKIP_SMUDGE: '1',
+  };
+}
+
+async function runGit(
+  exec: ExecRunner,
+  repoRoot: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv,
+  timeout = 15_000,
+): Promise<ExecCommandResult> {
+  return exec('git', [...GIT_NO_LFS_ARGS, ...args], {
+    cwd: repoRoot,
+    env: gitEnv(env),
+    timeout,
+  });
+}
+
+export async function detectSourceCheckoutEligibility(options: {
+  repoRoot?: string;
+  automatic?: boolean;
+  branch?: string;
+  env?: NodeJS.ProcessEnv;
+  exec?: ExecRunner;
+}): Promise<SourceEligibilityResult> {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const env = options.env ?? process.env;
+  const exec = options.exec ?? defaultExec;
+  const targetBranch = options.branch ?? env.OPENMOTION_UPDATE_BRANCH ?? DEFAULT_UPDATE_BRANCH;
+  const flag = parseAutoUpdateFlag(env);
+
+  if (options.automatic) {
+    if (flag === 'disabled') return { eligible: false, status: 'disabled', reason: 'disabled_by_env' };
+    if (env.OPENMOTION_DEPLOYMENT_MODE?.trim().toLowerCase() === 'cloud') {
+      return { eligible: false, status: 'unsupported', reason: 'cloud_deployment' };
+    }
+    if (flag !== 'enabled' && isAutomatedTestRuntime(env)) {
+      return { eligible: false, status: 'disabled', reason: 'test_or_ci_runtime' };
+    }
+  }
+
+  if (existsSync(path.join(repoRoot, '.npm-install.json'))) {
+    return { eligible: false, status: 'unsupported', reason: 'npm_managed_installation' };
+  }
+  if (!existsSync(path.join(repoRoot, '.git'))) {
+    return { eligible: false, status: 'unsupported', reason: 'not_git_checkout' };
+  }
+
+  try {
+    const branchResult = await runGit(exec, repoRoot, ['symbolic-ref', '--quiet', '--short', 'HEAD'], env, 5_000);
+    const currentBranch = branchResult.stdout.trim();
+    if (!currentBranch || currentBranch !== targetBranch) {
+      return {
+        eligible: false,
+        status: 'non_target_branch',
+        reason: `checked_out_on_${currentBranch || 'detached'}`,
+        branch: currentBranch || undefined,
+      };
+    }
+    return { eligible: true, branch: currentBranch };
+  } catch {
+    return {
+      eligible: false,
+      status: 'non_target_branch',
+      reason: 'detached_or_unreadable_head',
+    };
+  }
+}
+
+export function parseDirtyWorktreeFiles(porcelainZOutput: string): string[] {
+  const dirty: string[] = [];
+  const tokens = porcelainZOutput.split('\0');
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i];
+    if (!entry || entry.length < 4) continue;
+    const status = entry.slice(0, 2);
+    const file = normalizeRelativePath(entry.slice(3));
+    // Renames/copies emit an extra NUL-separated source path.
+    if (status[0] === 'R' || status[0] === 'C') i++;
+    if (status === '??' && IGNORED_UNTRACKED_PATHS.has(file)) continue;
+    dirty.push(file);
+  }
+  return dirty;
+}
+
+function parseRemoteBranchSha(lsRemoteOutput: string, branch: string): string | null {
+  const expectedRef = `refs/heads/${branch}`;
+  for (const line of lsRemoteOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const [sha, ref] = trimmed.split(/\s+/);
+    if (ref === expectedRef && sha && /^[a-f0-9]{40}$/i.test(sha)) {
+      return sha.toLowerCase();
+    }
+  }
+  return null;
+}
+
+export async function checkSourceUpdate(options: SourceUpdateOptions): Promise<SourceUpdateCheckResult> {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const env = options.env ?? process.env;
+  const exec = options.exec ?? defaultExec;
+  const now = (options.now ?? Date.now)();
+  const remote = options.remote ?? env.OPENMOTION_UPDATE_REMOTE ?? DEFAULT_UPDATE_REMOTE;
+  const branch = options.branch ?? env.OPENMOTION_UPDATE_BRANCH ?? DEFAULT_UPDATE_BRANCH;
+  const intervalMs = resolveCheckIntervalMs(env, options.intervalMs);
+
+  const eligibility = await detectSourceCheckoutEligibility({
+    repoRoot,
+    automatic: options.automatic,
+    branch,
+    env,
+    exec,
+  });
+  if (!eligibility.eligible) {
+    return {
+      status: eligibility.status ?? 'unsupported',
+      checked: false,
+      updateAvailable: false,
+      reason: eligibility.reason,
+      branch: eligibility.branch,
+    };
+  }
+
+  if (!options.force) {
+    const cached = await readUpdateState(options.dataDirectory).catch(() => null);
+    if (isUpdateCheckFresh(cached, now, intervalMs)) {
+      return {
+        status: 'skipped_ttl',
+        checked: false,
+        updateAvailable: false,
+        branch,
+        currentCommit: cached?.currentCommit,
+        remoteCommit: cached?.remoteCommit,
+        lastCheckedAt: cached?.lastCheckedAt,
+      };
+    }
+  }
+
+  let currentCommit: string;
+  try {
+    currentCommit = (await runGit(exec, repoRoot, ['rev-parse', 'HEAD'], env, 5_000)).stdout.trim().toLowerCase();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeUpdateState(options.dataDirectory, {
+      lastAttemptAt: now,
+      lastStatus: 'check_failed',
+      branch,
+      lastError: message.slice(0, 500),
+    }).catch(() => {});
+    return { status: 'check_failed', checked: false, updateAvailable: false, branch, error: message };
+  }
+
+  try {
+    const remoteResult = await runGit(
+      exec,
+      repoRoot,
+      ['ls-remote', '--heads', remote, branch],
+      env,
+      5_000,
+    );
+    const remoteCommit = parseRemoteBranchSha(remoteResult.stdout, branch);
+    if (!remoteCommit) {
+      throw new Error(`Remote branch ${remote}/${branch} not found`);
+    }
+    const updateAvailable = remoteCommit !== currentCommit;
+    const status = updateAvailable ? 'update_available' : 'up_to_date';
+    await writeUpdateState(options.dataDirectory, {
+      lastCheckedAt: now,
+      lastAttemptAt: now,
+      lastStatus: status,
+      currentCommit,
+      remoteCommit,
+      branch,
+      lastError: undefined,
+    }).catch(() => {});
+    return {
+      status,
+      checked: true,
+      updateAvailable,
+      branch,
+      currentCommit,
+      remoteCommit,
+      lastCheckedAt: now,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeUpdateState(options.dataDirectory, {
+      lastAttemptAt: now,
+      lastStatus: 'check_failed',
+      currentCommit,
+      branch,
+      lastError: message.slice(0, 500),
+    }).catch(() => {});
+    return {
+      status: 'check_failed',
+      checked: false,
+      updateAvailable: false,
+      branch,
+      currentCommit,
+      error: message,
+    };
+  }
+}
+
+function resolveNpmCommand(env: NodeJS.ProcessEnv): { command: string; prefixArgs: string[] } {
+  const execPath = env.npm_execpath;
+  if (execPath && /\.[cm]?js$/i.test(execPath) && existsSync(execPath)) {
+    return { command: process.execPath, prefixArgs: [execPath] };
+  }
+  const bundledNpm = path.join(
+    path.dirname(process.execPath),
+    process.platform === 'win32' ? 'node_modules/npm/bin/npm-cli.js' : '../lib/node_modules/npm/bin/npm-cli.js',
+  );
+  if (existsSync(bundledNpm)) {
+    return { command: process.execPath, prefixArgs: [bundledNpm] };
+  }
+  return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', prefixArgs: [] };
+}
+
+async function runNpmCiWithFallback(
+  exec: ExecRunner,
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const { command, prefixArgs } = resolveNpmCommand(env);
+  const args = [...prefixArgs, 'ci', '--include=dev', '--no-audit', '--no-fund'];
+  if (env.npm_config_registry) {
+    await exec(command, args, { cwd: repoRoot, env, timeout: 180_000 });
+    return;
+  }
+  let lastError: unknown;
+  for (const registry of NPM_FALLBACK_REGISTRIES) {
+    try {
+      await exec(command, args, {
+        cwd: repoRoot,
+        env: { ...env, npm_config_registry: registry, npm_config_fetch_retries: '0' },
+        timeout: 180_000,
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+async function runStudioBuild(
+  exec: ExecRunner,
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const { command, prefixArgs } = resolveNpmCommand(env);
+  await exec(command, [...prefixArgs, 'run', 'build:studio'], {
+    cwd: repoRoot,
+    env,
+    timeout: 180_000,
+  });
+}
+
+async function loadBuildStateModule(repoRoot: string): Promise<{
+  dependenciesCurrent: (root: string, options?: { inspectInstalledLock?: boolean }) => Promise<boolean>;
+  recordDependencies: (root: string) => Promise<void>;
+  sourceBuildCurrent: (root: string) => Promise<boolean>;
+  recordSourceBuild: (root: string) => Promise<void>;
+} | null> {
+  const scriptPath = path.join(repoRoot, 'scripts/source-build-state.mjs');
+  if (!existsSync(scriptPath)) return null;
+  return import(pathToFileURL(scriptPath).href);
+}
+
+async function isInsideDirectory(parent: string, child: string): Promise<boolean> {
+  try {
+    const [realParent, realChild] = await Promise.all([realpath(parent), realpath(child)]);
+    const relative = path.relative(realParent, realChild);
+    return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+  } catch {
+    return false;
+  }
+}
+
+export async function syncInstalledHostSkills(
+  repoRoot: string,
+  options: { homeDirectory?: string; env?: NodeJS.ProcessEnv } = {},
+): Promise<string[]> {
+  const home = options.homeDirectory ?? os.homedir();
+  const env = options.env ?? process.env;
+  const candidateRoots = [...new Set([
+    path.join(home, '.agents/skills'),
+    path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'skills'),
+    path.join(env.CODEX_HOME || path.join(home, '.codex'), 'skills'),
+    path.join(env.WORKBUDDY_CONFIG_DIR || path.join(home, '.workbuddy'), 'skills'),
+    path.join(home, '.cursor/skills'),
+  ])];
+
+  const synced: string[] = [];
+  for (const skill of SYNCABLE_SKILLS) {
+    const sourceDir = path.join(repoRoot, 'skills', skill);
+    if (!existsSync(path.join(sourceDir, 'SKILL.md'))) continue;
+
+    for (const rootDir of candidateRoots) {
+      const targetDir = path.join(rootDir, skill);
+      const info = await lstat(targetDir).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!info || info.isSymbolicLink() || !info.isDirectory()) continue;
+      if (await isInsideDirectory(repoRoot, targetDir)) continue;
+
+      // Never overwrite npm-managed installer bundles.
+      const scopeRaw = await readFile(path.join(targetDir, 'scope.json'), 'utf8').catch(() => null);
+      if (scopeRaw) {
+        try {
+          const scope = JSON.parse(scopeRaw);
+          if (scope?.managedBy === '@openmotion/installer') continue;
+        } catch {
+          // Ignore malformed scope metadata and verify SKILL.md ownership below.
+        }
+      }
+
+      // Only overwrite directories verified to contain this exact OpenMotion skill.
+      const existingSkillMd = await readFile(path.join(targetDir, 'SKILL.md'), 'utf8').catch(() => '');
+      const namePattern = new RegExp(`^name:\\s*${skill}\\s*$`, 'm');
+      if (!namePattern.test(existingSkillMd)) continue;
+
+      const stage = await mkdtemp(path.join(rootDir, `.openmotion-sync-${skill}-`));
+      const backup = `${stage}-backup`;
+      let movedOld = false;
+      let movedNew = false;
+      try {
+        await cp(sourceDir, stage, { recursive: true });
+        await rename(targetDir, backup);
+        movedOld = true;
+        await rename(stage, targetDir);
+        movedNew = true;
+        await rm(backup, { recursive: true, force: true }).catch(() => {});
+        synced.push(targetDir);
+      } catch {
+        if (movedNew) await rm(targetDir, { recursive: true, force: true }).catch(() => {});
+        if (movedOld) await rename(backup, targetDir).catch(() => {});
+      } finally {
+        await rm(stage, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }
+  return synced;
+}
+
+async function defaultShutdownIdleBackend(dataDirectory: string): Promise<{ restarted: boolean; deferred: boolean }> {
+  if (!sharedEditorEnabled) return { restarted: false, deferred: false };
+  const editor = await readEditor(dataDirectory).catch(() => null);
+  if (!editor) return { restarted: false, deferred: false };
+  try {
+    await editorRequest(editor, '/editor-api/shutdown', {}, 5_000);
+  } catch (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 409) return { restarted: false, deferred: true };
+    // Daemon may already have exited; verify below.
+  }
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const stillRunning = await readEditor(dataDirectory).catch(() => null);
+    if (!stillRunning) return { restarted: true, deferred: false };
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  return { restarted: false, deferred: true };
+}
+
+export async function applySourceUpdate(options: SourceUpdateOptions): Promise<SourceUpdateApplyResult> {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const env = options.env ?? process.env;
+  const exec = options.exec ?? defaultExec;
+  const now = (options.now ?? Date.now)();
+  const remote = options.remote ?? env.OPENMOTION_UPDATE_REMOTE ?? DEFAULT_UPDATE_REMOTE;
+  const branch = options.branch ?? env.OPENMOTION_UPDATE_BRANCH ?? DEFAULT_UPDATE_BRANCH;
+  const restartBackend = options.restartBackend !== false;
+
+  const eligibility = await detectSourceCheckoutEligibility({
+    repoRoot,
+    automatic: options.automatic,
+    branch,
+    env,
+    exec,
+  });
+  if (!eligibility.eligible) {
+    return {
+      status: eligibility.status ?? 'unsupported',
+      updated: false,
+      reason: eligibility.reason,
+      branch: eligibility.branch,
+    };
+  }
+
+  await mkdir(options.dataDirectory, { recursive: true });
+  const lockPath = path.join(options.dataDirectory, UPDATE_LOCK_FILENAME);
+
+  return withProcessLock(lockPath, async () => {
+    const statusResult = await runGit(
+      exec,
+      repoRoot,
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      env,
+      10_000,
+    );
+    const dirtyFiles = parseDirtyWorktreeFiles(statusResult.stdout);
+    if (dirtyFiles.length > 0) {
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: now,
+        lastAttemptAt: now,
+        lastStatus: 'dirty_worktree',
+        branch,
+      }).catch(() => {});
+      return {
+        status: 'dirty_worktree',
+        updated: false,
+        branch,
+        dirtyFiles,
+      };
+    }
+
+    const previousCommit = (await runGit(exec, repoRoot, ['rev-parse', 'HEAD'], env, 5_000)).stdout.trim().toLowerCase();
+
+    try {
+      await runGit(exec, repoRoot, ['fetch', '--depth', '1', '--no-tags', remote, branch], env, 60_000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeUpdateState(options.dataDirectory, {
+        lastAttemptAt: now,
+        lastStatus: 'check_failed',
+        currentCommit: previousCommit,
+        branch,
+        lastError: message.slice(0, 500),
+      }).catch(() => {});
+      return {
+        status: 'failed',
+        updated: false,
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+        error: message,
+      };
+    }
+
+    const targetCommit = (await runGit(exec, repoRoot, ['rev-parse', 'FETCH_HEAD'], env, 5_000)).stdout.trim().toLowerCase();
+    if (targetCommit === previousCommit) {
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: now,
+        lastAttemptAt: now,
+        lastStatus: 'up_to_date',
+        currentCommit: previousCommit,
+        remoteCommit: targetCommit,
+        branch,
+        lastError: undefined,
+      }).catch(() => {});
+      return {
+        status: 'up_to_date',
+        updated: false,
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+      };
+    }
+
+    let changedFiles: string[] = [];
+    try {
+      const diffResult = await runGit(exec, repoRoot, ['diff', '--name-only', previousCommit, targetCommit], env, 10_000);
+      changedFiles = diffResult.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    } catch {
+      // If shallow history cannot diff directly, conservatively flag build/skill checks.
+      changedFiles = ['package-lock.json', 'studio/index.html', 'skills/openmotion-game/SKILL.md'];
+    }
+    const classification = classifyChangedFiles(changedFiles);
+
+    await runGit(exec, repoRoot, ['reset', '--hard', targetCommit], env, 30_000);
+
+    let depsInstalled = false;
+    let depsAttempted = false;
+    let studioRebuilt = false;
+    try {
+      const buildState = await loadBuildStateModule(repoRoot);
+      const needDeps = buildState
+        ? !(await buildState.dependenciesCurrent(repoRoot, { inspectInstalledLock: true }))
+        : classification.lockfileChanged;
+
+      if (needDeps) {
+        depsAttempted = true;
+        await runNpmCiWithFallback(exec, repoRoot, env);
+        depsInstalled = true;
+        if (buildState) await buildState.recordDependencies(repoRoot).catch(() => {});
+      }
+
+      const studioIndexExists = existsSync(path.join(repoRoot, 'studio/build/index.html'));
+      const buildReceiptExists = existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'));
+      let needStudioBuild = !studioIndexExists;
+      if (!needStudioBuild) {
+        if (classification.studioInputChanged || buildReceiptExists) {
+          needStudioBuild = buildState ? !(await buildState.sourceBuildCurrent(repoRoot)) : classification.studioInputChanged;
+        }
+      }
+
+      if (needStudioBuild) {
+        await runStudioBuild(exec, repoRoot, env);
+        studioRebuilt = true;
+        if (buildState) await buildState.recordSourceBuild(repoRoot).catch(() => {});
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      let rolledBack = false;
+      try {
+        await runGit(exec, repoRoot, ['reset', '--hard', previousCommit], env, 30_000);
+        if (depsAttempted && !existsSync(path.join(repoRoot, 'node_modules/.package-lock.json'))) {
+          await runNpmCiWithFallback(exec, repoRoot, env).catch(() => {});
+        }
+        rolledBack = true;
+      } catch {
+        rolledBack = false;
+      }
+      await writeUpdateState(options.dataDirectory, {
+        lastAttemptAt: now,
+        lastStatus: rolledBack ? 'failed_rolled_back' : 'failed',
+        currentCommit: rolledBack ? previousCommit : targetCommit,
+        remoteCommit: targetCommit,
+        branch,
+        lastError: message.slice(0, 500),
+      }).catch(() => {});
+      return {
+        status: rolledBack ? 'failed_rolled_back' : 'failed',
+        updated: false,
+        rolledBack,
+        branch,
+        previousCommit,
+        currentCommit: rolledBack ? previousCommit : targetCommit,
+        error: message,
+      };
+    }
+
+    const syncedSkills = await syncInstalledHostSkills(repoRoot, {
+      homeDirectory: options.homeDirectory,
+      env,
+    }).catch(() => [] as string[]);
+
+    let restarted = false;
+    let restartDeferred = false;
+    if (restartBackend) {
+      const shutdown = options.shutdownBackend ?? defaultShutdownIdleBackend;
+      const outcome = await shutdown(options.dataDirectory).catch(() => ({ restarted: false, deferred: false }));
+      restarted = outcome.restarted;
+      restartDeferred = outcome.deferred;
+    }
+
+    await writeUpdateState(options.dataDirectory, {
+      lastCheckedAt: now,
+      lastAttemptAt: now,
+      lastUpdatedAt: now,
+      lastStatus: 'updated',
+      currentCommit: targetCommit,
+      remoteCommit: targetCommit,
+      branch,
+      lastError: undefined,
+    }).catch(() => {});
+
+    return {
+      status: 'updated',
+      updated: true,
+      branch,
+      previousCommit,
+      currentCommit: targetCommit,
+      changedFilesCount: changedFiles.length,
+      skillChanged: classification.skillChanged,
+      gameSkillChanged: classification.gameSkillChanged,
+      changedSkills: classification.changedSkills,
+      mcpSchemaChanged: classification.mcpSchemaChanged,
+      depsInstalled,
+      studioRebuilt,
+      syncedSkills,
+      restarted,
+      restartDeferred,
+    };
+  }, 240_000);
+}
+
+export async function maybeAutoUpdateBeforeCreation(
+  options: SourceUpdateOptions,
+): Promise<SourceUpdateCheckResult | SourceUpdateApplyResult> {
+  try {
+    const check = await checkSourceUpdate({ ...options, automatic: true });
+    if (check.status !== 'update_available') return check;
+    return await applySourceUpdate({ ...options, automatic: true });
+  } catch (error) {
+    return {
+      status: 'check_failed',
+      checked: false,
+      updateAvailable: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export function compactRuntimeUpdateNotice(
+  result: SourceUpdateCheckResult | SourceUpdateApplyResult | null | undefined,
+): RuntimeUpdateNotice | undefined {
+  if (!result || result.status !== 'updated' || !result.updated) return undefined;
+  return {
+    status: 'updated',
+    previousCommit: result.previousCommit ?? '',
+    currentCommit: result.currentCommit ?? '',
+    skillChanged: Boolean(result.skillChanged),
+    gameSkillChanged: Boolean(result.gameSkillChanged),
+    changedSkills: Array.isArray(result.changedSkills) ? result.changedSkills : [],
+    mcpSchemaChanged: Boolean(result.mcpSchemaChanged),
+    depsInstalled: Boolean(result.depsInstalled),
+    studioRebuilt: Boolean(result.studioRebuilt),
+    restarted: Boolean(result.restarted),
+    restartDeferred: Boolean(result.restartDeferred),
+  };
+}
