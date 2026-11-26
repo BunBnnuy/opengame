@@ -185,6 +185,15 @@
 .om-sa-game-copy strong { max-width: 20ch; white-space: pre-line; font-size: var(--motion-text-display); font-weight: var(--motion-weight-bold); line-height: 1.35; }
 .om-sa-game-copy strong:lang(zh) { max-width: 100%; }
 .om-sa-game-title-accent { color: var(--motion-brand); }
+@supports (background-clip: text) {
+  @media (forced-colors: none) {
+    .om-sa-game-title-accent {
+      background: linear-gradient(90deg, var(--motion-brand), var(--motion-creation-home-accent));
+      background-clip: text;
+      color: transparent;
+    }
+  }
+}
 .om-sa-game-copy small { color: var(--motion-neutral-n5); font-size: var(--motion-text-sm); }
 .om-sa-game-cta {
   gap: var(--motion-space-12);
