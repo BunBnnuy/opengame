@@ -195,19 +195,20 @@ test('the existing standalone gate rejects failed, cancelled, skipped and missin
   assert.equal(run({ ...manual, studio: { result: 'skipped' } }, true).status, 1);
 });
 
-// Root test files that no workflow names yet. The root `npm test` script is not invoked
-// by any lane, so a file only runs when a workflow names it. Freezing the current gap
-// keeps it visible: a new test file must either be scheduled or added here deliberately.
+// Root test files without an OpenGame workflow command.
 const unscheduledSuites = [
   'asset-routing.test.ts', 'assets-use.test.ts', 'brand-story-tracking.test.ts', 'bundled-npm-runtime.test.ts',
   'codex-host-handoff.test.ts', 'cold-start.test.ts', 'final-video-delivery.test.ts', 'final-video-ui.test.ts',
   'game-harness-generalization.test.ts', 'game-projects.test.ts', 'hosted-game-templates.test.ts',
-  'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
+  'inline-video-preview.test.ts', 'inline-video-result.test.ts', 'install-guide.test.ts', 'install-public-skill.test.ts', 'integration.test.ts',
   'legacy.test.ts', 'library-skill-catalog.test.ts', 'lint.test.ts', 'mcp-client.test.ts', 'mcp-config.test.ts', 'mcp.test.ts', 'media-save.test.ts',
-  'npm-distribution-selection.test.ts', 'onboarding-recovery.test.ts', 'page-metadata.test.ts', 'phase1-runtime.test.ts', 'phase1-shared.test.ts',
-  'prebuilt-bootstrap.test.ts', 'recreate-rendering.test.ts', 'registry-download.test.mjs', 'registry-material-compat.test.ts', 'registry.test.ts', 'shared-editor.test.ts',
-  'source-native-runtime.test.ts', 'studio-history-availability.test.ts',
-  'template-metadata.test.ts', 'template-playback.test.ts', 'templates.test.ts', 'tracking-task-ledger.test.ts',
+  'npm-distribution-selection.test.ts', 'npm-installer.test.ts', 'npm-package.test.ts', 'onboarding-recovery.test.ts',
+  'package.test.ts', 'page-metadata.test.ts', 'phase1-runtime.test.ts', 'phase1-shared.test.ts',
+  'prebuilt-bootstrap.test.ts', 'recreate-rendering.test.ts', 'registry-download.test.mjs', 'registry-material-compat.test.ts', 'registry.test.ts',
+  'release-notes.test.mjs', 'release-workflows.test.mjs', 'shared-editor.test.ts', 'source-native-runtime.test.ts',
+  'stable-release.test.mjs', 'studio-history-availability.test.ts',
+  'template-metadata.test.ts', 'template-playback.test.ts', 'template-registry-consumer.test.mjs',
+  'templates.test.ts', 'test-package.test.ts', 'tracking-task-ledger.test.ts',
   'verify-export.test.ts', 'video-compare.test.ts', 'vision-runtime-native.test.mjs', 'vision-runtime.test.mjs',
   'welcome-template.test.ts', 'work-generation.test.ts', 'workflow-layering.test.ts',
 ];
@@ -215,9 +216,17 @@ const unscheduledSuites = [
 // Only shell bodies execute. A suite mentioned in a comment, a `paths:` filter or a
 // job name is documentation, not a scheduled run, so the scan reads `run:` bodies only.
 function runCommands(workflow) {
+  const jobs = workflow.split(/^jobs:\s*$/m)[1] ?? '';
+  return jobs.split(/^  [\w-]+:\s*$/m).filter(job => {
+    const gate = job.match(/^    if:\s*(?:\$\{\{\s*)?github\.repository\s*==\s*'([^']+)'\s*(?:&&|\}\}|$)/m);
+    return !gate || gate[1] === 'nexu-io/opengame';
+  }).map(jobCommands).join('\n');
+}
+
+function jobCommands(job) {
   const commands = [];
   let blockIndent = null;
-  for (const raw of workflow.split(/\r?\n/)) {
+  for (const raw of job.split(/\r?\n/)) {
     const line = raw.replace(/(^|\s)#.*$/, '');
     if (!line.trim()) continue;
     const indent = line.match(/^\s*/)[0].length;
