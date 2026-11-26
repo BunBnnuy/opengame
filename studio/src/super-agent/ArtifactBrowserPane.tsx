@@ -45,6 +45,7 @@ import {
   bundledGames,
   communityGames,
   coverUrl,
+  formatPlays,
   gameApi,
   playableUrl,
   rememberInstruction,
@@ -1859,7 +1860,7 @@ export function ArtifactBrowserPane({
   /** Previous / next controls for template games opened from the showcase list. */
   templateFeed?: TemplateFeedControls | null;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [viewMode, setViewMode] = useState<'preview' | 'code' | 'trailer'>('preview');
   const [gameMetaEntry, setGameMetaEntry] = useState<{
     artifactId: string;
@@ -2077,21 +2078,22 @@ export function ArtifactBrowserPane({
     (Boolean(activeArtifact?.projectId) && (activeArtifact?.kind === 'design-project' || activeArtifact?.kind === 'motion-project'))
     || (activeArtifact?.kind === 'game-project' && Boolean(gamePublishId) && (Boolean(activeArtifact.projectId) || Boolean(gameEmbedUrl)))
   );
-  // Template feed: like / Remix / Share move from the toolbar into the rail beside the game.
+  // Template feed: Remix moves from the toolbar into the rail beside the game; Share stays in the toolbar.
   const feedRailActive = Boolean(templateFeed && activeArtifact?.kind === 'game-project' && (isGameTrial || viewMode === 'preview'));
   const toolbarRemix = feedRailActive ? undefined : toolbarGameAction;
-  const toolbarCloudShare = canCloudShare && !feedRailActive;
+  const toolbarCloudShare = canCloudShare;
+  const [gameInfoOpen, setGameInfoOpen] = useState(false);
   // Likes are saved by the local game service, which knows bundled templates but not external community links.
   const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && activeGameProjectId && isGameTrial);
   // Viewer reactions from the local game service, loaded once while the rail is in use.
-  const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number }>>({});
-  const reactionsRequestRef = useRef<Promise<Record<string, { reaction: -1 | 0 | 1; likes: number }>> | null>(null);
+  const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }>>({});
+  const reactionsRequestRef = useRef<Promise<Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }>> | null>(null);
   // Shared catalog read; a failure clears it so the next template (or the next Like click) retries.
   const loadGameReactions = useCallback(() => {
     reactionsRequestRef.current ??= gameApi.catalog()
       .then(res => {
-        const loaded: Record<string, { reaction: -1 | 0 | 1; likes: number }> = {};
-        for (const game of res.games ?? []) loaded[game.id] = { reaction: game.reaction, likes: game.likes };
+        const loaded: Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }> = {};
+        for (const game of res.games ?? []) loaded[game.id] = { reaction: game.reaction, likes: game.likes, dislikes: game.dislikes };
         setGameReactions(prev => ({ ...loaded, ...prev }));
         return loaded;
       })
@@ -2106,20 +2108,21 @@ export function ArtifactBrowserPane({
     void loadGameReactions().catch(() => { /* offline: clicking Like explains why it cannot save */ });
   }, [activeGameProjectId, canReactToGame, feedRailActive, gameReactions, loadGameReactions]);
   const activeReaction = activeGameProjectId
-    ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0 }
+    ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0, dislikes: bundledMatch?.dislikes ?? 0 }
     : null;
   // One like request per game at a time; other games stay clickable while it saves.
   const [likesSaving, setLikesSaving] = useState<ReadonlySet<string>>(() => new Set());
   const likeSaving = Boolean(activeGameProjectId && likesSaving.has(activeGameProjectId));
-  const toggleGameLike = useCallback(() => {
+  // value 1 = like, -1 = dislike; pressing the active one again clears it.
+  const toggleGameReaction = useCallback((value: 1 | -1) => {
     const gameId = activeGameProjectId;
     if (!gameId || likesSaving.has(gameId)) return;
     setLikesSaving(prev => new Set(prev).add(gameId));
     // Toggle from the saved state: read it first if it never loaded (e.g. the service started later).
     const known = gameReactions[gameId];
-    void (known ? Promise.resolve(known) : loadGameReactions().then(loaded => loaded[gameId] ?? { reaction: 0 as const, likes: 0 }))
-      .then(current => gameApi.react(gameId, current.reaction === 1 ? 0 : 1))
-      .then(game => setGameReactions(prev => ({ ...prev, [game.id]: { reaction: game.reaction, likes: game.likes } })))
+    void (known ? Promise.resolve(known) : loadGameReactions().then(loaded => loaded[gameId] ?? { reaction: 0 as const, likes: 0, dislikes: 0 }))
+      .then(current => gameApi.react(gameId, current.reaction === value ? 0 : value))
+      .then(game => setGameReactions(prev => ({ ...prev, [game.id]: { reaction: game.reaction, likes: game.likes, dislikes: game.dislikes } })))
       .catch(() => onNotify?.(t('Start the local game service to save reactions.'), 'info'))
       .finally(() => setLikesSaving(prev => {
         const rest = new Set(prev);
@@ -2419,6 +2422,8 @@ export function ArtifactBrowserPane({
   const communityMatch = activeArtifact?.kind === 'game-project' && !activeArtifact.projectId
     ? communityGames.find(game => `game:${game.id}` === activeArtifact.id)
     : undefined;
+  // Title, description and controls for the rail's Info popover.
+  const infoGame = activeArtifact?.kind === 'game-project' ? (bundledMatch ?? communityMatch) : undefined;
   const sourceCredit = communityMatch?.external;
   const externalHref = activeArtifact
     ? activeArtifact.kind === 'design-project' && activeArtifact.projectId
@@ -3656,36 +3661,73 @@ export function ArtifactBrowserPane({
             const railActions = feedRailActive ? (
               <>
                 {canReactToGame && (
-                  <TemplateFeedAction
-                    icon={activeReaction?.reaction === 1 ? 'thumb-up-fill' : 'thumb-up-line'}
-                    label={activeReaction && activeReaction.likes > 0 ? String(activeReaction.likes) : t('Like')}
-                    ariaLabel={t('Like')}
-                    pressed={activeReaction?.reaction === 1}
-                    disabled={likeSaving}
-                    onClick={toggleGameLike}
-                  />
+                  <>
+                    <TemplateFeedAction
+                      icon={activeReaction?.reaction === 1 ? 'thumb-up-fill' : 'thumb-up-line'}
+                      label={activeReaction && activeReaction.likes > 0 ? formatPlays(activeReaction.likes, locale) : t('Like')}
+                      ariaLabel={t('Like')}
+                      pressed={activeReaction?.reaction === 1}
+                      disabled={likeSaving}
+                      onClick={() => toggleGameReaction(1)}
+                    />
+                    <TemplateFeedAction
+                      icon={activeReaction?.reaction === -1 ? 'thumb-down-fill' : 'thumb-down-line'}
+                      label={activeReaction && activeReaction.dislikes > 0 ? formatPlays(activeReaction.dislikes, locale) : t('Dislike')}
+                      ariaLabel={t('Dislike')}
+                      pressed={activeReaction?.reaction === -1}
+                      disabled={likeSaving}
+                      onClick={() => toggleGameReaction(-1)}
+                    />
+                  </>
                 )}
                 {toolbarGameAction && (
-                  <TemplateFeedAction icon="sparkling-line" label={t('Remix')} ariaLabel={t('Remix')} onClick={() => toolbarGameAction(activeArtifact)} />
+                  <TemplateFeedAction variant="primary" icon="sparkling-line" label={t('Remix')} ariaLabel={t('Remix')} onClick={() => toolbarGameAction(activeArtifact)} />
                 )}
-                {canCloudShare && (
-                  <WebPublishPopover
-                    compact
-                    targetKind="game"
-                    targetId={gamePublishId}
-                    embedUrl={gameEmbedUrl}
-                    filePath={activeArtifact.entry}
-                    title={activeArtifact.title}
+                <TemplateFeedAction icon="refresh-line" label={t('Replay')} ariaLabel={t('Replay')} onClick={handleReload} />
+                {infoGame && (
+                  <Popover
+                    open={gameInfoOpen}
+                    onOpenChange={setGameInfoOpen}
                     side={templateFeed?.placement === 'bottom' ? 'top' : 'left'}
                     align={templateFeed?.placement === 'bottom' ? 'end' : 'center'}
-                    triggerClassName="om-sa-template-feed-action om-sa-template-feed-share"
-                    autoOpen={pendingDeployArtifactId === activeArtifact.id}
-                    onAutoOpenConsumed={onConsumeDeployRequest}
-                    revisionKey={activeArtifact.revision ?? String(activeArtifact.updatedAt)}
-                    onOpenAccount={onOpenAccountSettings}
-                    onNotify={onNotify}
-                  />
+                    aria-label={t('Game info')}
+                    className="om-sa-template-feed-info"
+                    trigger={
+                      <Button
+                        variant="plain"
+                        type="button"
+                        className="om-sa-template-feed-action"
+                        data-variant="plain"
+                        data-active={gameInfoOpen || undefined}
+                        aria-label={t('Game info')}
+                        aria-expanded={gameInfoOpen}
+                      >
+                        <span className="om-sa-template-feed-action-icon" aria-hidden="true">
+                          <RemixIcon name="information-line" size={18} />
+                        </span>
+                        <span className="om-sa-template-feed-action-label">{t('Info')}</span>
+                      </Button>
+                    }
+                  >
+                    <div className="om-sa-template-feed-info-body">
+                      <strong>{infoGame.i18n?.[locale]?.title ?? infoGame.title}</strong>
+                      <p>{infoGame.i18n?.[locale]?.description ?? infoGame.description}</p>
+                      {(infoGame.i18n?.[locale]?.controls ?? infoGame.controls) && (
+                        <p className="om-muted">{infoGame.i18n?.[locale]?.controls ?? infoGame.controls}</p>
+                      )}
+                      {infoGame.external && (
+                        <p className="om-muted">{t('By {author}', { author: infoGame.external.author })}</p>
+                      )}
+                    </div>
+                  </Popover>
                 )}
+                <TemplateFeedAction
+                  icon={expanded ? 'fullscreen-exit-line' : 'fullscreen-line'}
+                  label={t('Full screen')}
+                  ariaLabel={t('Full screen')}
+                  pressed={expanded}
+                  onClick={onToggleExpand}
+                />
               </>
             ) : null;
             return (

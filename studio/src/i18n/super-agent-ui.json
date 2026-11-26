@@ -1143,7 +1143,11 @@
     "Next template (↓)": "下一个模板（↓）",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "上一个",
-    "Next game": "下一个"
+    "Next game": "下一个",
+    "Replay": "重玩",
+    "Info": "信息",
+    "Game info": "游戏信息",
+    "By {author}": "作者：{author}"
   },
   "ja": {
     "Play again": "もう一度遊ぶ",
@@ -2289,7 +2293,11 @@
     "Next template (↓)": "次のテンプレート（↓）",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "前へ",
-    "Next game": "次へ"
+    "Next game": "次へ",
+    "Replay": "もう一度",
+    "Info": "情報",
+    "Game info": "ゲーム情報",
+    "By {author}": "作者：{author}"
   },
   "ko": {
     "Play again": "다시 플레이",
@@ -3435,7 +3443,11 @@
     "Next template (↓)": "다음 템플릿 (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "이전",
-    "Next game": "다음"
+    "Next game": "다음",
+    "Replay": "다시 하기",
+    "Info": "정보",
+    "Game info": "게임 정보",
+    "By {author}": "제작: {author}"
   },
   "de": {
     "Play again": "Erneut spielen",
@@ -4584,7 +4596,11 @@
     "Next template (↓)": "Nächste Vorlage (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Zurück",
-    "Next game": "Weiter"
+    "Next game": "Weiter",
+    "Replay": "Neu starten",
+    "Info": "Info",
+    "Game info": "Spielinfo",
+    "By {author}": "Von {author}"
   },
   "fr": {
     "Play again": "Rejouer",
@@ -5733,7 +5749,11 @@
     "Next template (↓)": "Modèle suivant (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Précédent",
-    "Next game": "Suivant"
+    "Next game": "Suivant",
+    "Replay": "Rejouer",
+    "Info": "Infos",
+    "Game info": "Infos du jeu",
+    "By {author}": "Par {author}"
   },
   "ru": {
     "Play again": "Сыграть ещё",
@@ -6884,7 +6904,11 @@
     "Next template (↓)": "Следующий шаблон (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Назад",
-    "Next game": "Далее"
+    "Next game": "Далее",
+    "Replay": "Заново",
+    "Info": "Инфо",
+    "Game info": "Об игре",
+    "By {author}": "Автор: {author}"
   },
   "es": {
     "Play again": "Volver a jugar",
@@ -8033,7 +8057,11 @@
     "Next template (↓)": "Plantilla siguiente (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Anterior",
-    "Next game": "Siguiente"
+    "Next game": "Siguiente",
+    "Replay": "Reiniciar",
+    "Info": "Info",
+    "Game info": "Información del juego",
+    "By {author}": "Por {author}"
   },
   "pt-BR": {
     "Play again": "Jogar novamente",
@@ -9182,7 +9210,11 @@
     "Next template (↓)": "Próximo modelo (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Anterior",
-    "Next game": "Próximo"
+    "Next game": "Próximo",
+    "Replay": "Jogar de novo",
+    "Info": "Info",
+    "Game info": "Informações do jogo",
+    "By {author}": "Por {author}"
   },
   "it": {
     "Play again": "Gioca ancora",
@@ -10331,7 +10363,11 @@
     "Next template (↓)": "Modello successivo (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Precedente",
-    "Next game": "Successivo"
+    "Next game": "Successivo",
+    "Replay": "Rigioca",
+    "Info": "Info",
+    "Game info": "Info sul gioco",
+    "By {author}": "Di {author}"
   },
   "tr": {
     "Play again": "Tekrar oyna",
@@ -11477,6 +11513,10 @@
     "Next template (↓)": "Sonraki şablon (↓)",
     "{current} / {total}": "{current} / {total}",
     "Prev game": "Önceki",
-    "Next game": "Sonraki"
+    "Next game": "Sonraki",
+    "Replay": "Yeniden oyna",
+    "Info": "Bilgi",
+    "Game info": "Oyun bilgisi",
+    "By {author}": "Yapan: {author}"
   }
 }

@@ -12121,7 +12121,8 @@
   .om-sa-screw-result > svg { display: none; }
 }
 
-/* Template feed: previous / next, like, Remix and Share in a rail beside the template game, never over it. */
+/* Template feed rail beside the template game, never over it (same look as the community game feed):
+   Prev / Next centred, then like, dislike, Remix, replay, info and full screen at the bottom. */
 .om-sa-template-feed {
   flex: 1 1 auto;
   min-width: 0;
@@ -12147,58 +12148,53 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* safe: when the rail is taller than the pane, start at the top so every button stays reachable. */
-  justify-content: safe center;
-  gap: 14px;
-  width: 68px;
+  width: 76px;
   padding: 12px 0;
-  border-left: 1px solid color-mix(in srgb, var(--motion-border) 70%, transparent);
-  background: var(--motion-panel);
+  background: transparent;
   overflow-y: auto;
 }
 
-.om-sa-template-feed-group {
+.om-sa-template-feed-nav,
+.om-sa-template-feed-actions {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
 }
 
-.om-sa-template-feed-divider {
-  width: 24px;
-  height: 1px;
-  background: color-mix(in srgb, var(--motion-border) 70%, transparent);
+/* Prev / Next sit in the middle of the free height; when space runs out they stack from the top. */
+.om-sa-template-feed-nav {
+  flex: 1 0 auto;
+  justify-content: center;
+  gap: 14px;
+}
+
+.om-sa-template-feed-actions {
+  flex: 0 0 auto;
+  gap: 12px;
 }
 
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-rail {
   flex-direction: row;
+  justify-content: center;
   width: auto;
-  height: auto;
-  padding: 6px 12px;
-  gap: 16px;
-  border-left: 0;
-  border-top: 1px solid color-mix(in srgb, var(--motion-border) 70%, transparent);
+  padding: 8px 12px;
+  gap: 20px;
   overflow: visible;
 }
 
-.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-group {
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-nav,
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-actions {
+  flex: 0 0 auto;
   flex-direction: row;
-  gap: 12px;
+  gap: 14px;
 }
 
-.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-divider {
-  width: 1px;
-  height: 24px;
-}
-
-/* Round icon with a short label under it. The Share trigger comes from WebPublishPopover and
-   reuses the same look, so the svg itself carries the circle. */
 .om-sa-template-feed-action {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  min-width: 48px;
+  gap: 6px;
+  min-width: 52px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -12208,23 +12204,45 @@
   cursor: pointer;
 }
 
-.om-sa-template-feed-action > svg {
-  box-sizing: content-box;
-  width: 18px;
-  height: 18px;
-  padding: 9px;
+.om-sa-template-feed-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--motion-text) 8%, transparent);
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color 120ms ease, color 120ms ease, transform 120ms ease;
 }
 
-.om-sa-template-feed-action:not(:disabled):hover > svg {
-  background: color-mix(in srgb, var(--motion-text) 16%, transparent);
+.om-sa-template-feed-action[data-variant="plain"]:not(:disabled):hover .om-sa-template-feed-action-icon {
+  background: color-mix(in srgb, var(--motion-text) 10%, transparent);
 }
 
-.om-sa-template-feed-action[data-active] > svg {
-  color: var(--motion-accent, #00aa54);
-  background: color-mix(in srgb, var(--motion-accent, #00aa54) 16%, transparent);
+.om-sa-template-feed-action[data-variant="circle"] .om-sa-template-feed-action-icon,
+.om-sa-template-feed-action[data-variant="primary"] .om-sa-template-feed-action-icon {
+  width: 44px;
+  height: 44px;
+}
+
+.om-sa-template-feed-action[data-variant="circle"] .om-sa-template-feed-action-icon {
+  background: color-mix(in srgb, var(--motion-text) 10%, transparent);
+}
+
+.om-sa-template-feed-action[data-variant="circle"]:not(:disabled):hover .om-sa-template-feed-action-icon {
+  background: color-mix(in srgb, var(--motion-text) 18%, transparent);
+}
+
+.om-sa-template-feed-action[data-variant="primary"] .om-sa-template-feed-action-icon {
+  background: var(--motion-accent);
+  color: #0b0d0b;
+}
+
+.om-sa-template-feed-action[data-variant="primary"]:not(:disabled):hover .om-sa-template-feed-action-icon {
+  transform: scale(1.06);
+}
+
+.om-sa-template-feed-action[data-variant="plain"][data-active] .om-sa-template-feed-action-icon {
+  color: var(--motion-accent);
 }
 
 .om-sa-template-feed-action:disabled {
@@ -12232,20 +12250,40 @@
   opacity: 0.4;
 }
 
-.om-sa-template-feed-action-label,
-.om-sa-template-feed-action .om-web-publish-trigger-label {
-  max-width: 64px;
+.om-sa-template-feed-action-label {
+  max-width: 68px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--motion-muted);
 }
 
+.om-sa-template-feed-action[data-variant="primary"] .om-sa-template-feed-action-label {
+  color: var(--motion-text);
+  font-weight: 600;
+}
+
+/* Position stays available to screen readers; the rail itself shows no counter. */
 .om-sa-template-feed-count {
-  min-width: 36px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-  text-align: center;
-  color: var(--motion-muted);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.om-sa-template-feed-info-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 280px;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--motion-text);
+}
+
+.om-sa-template-feed-info-body > p {
+  margin: 0;
 }

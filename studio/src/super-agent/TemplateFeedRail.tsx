@@ -82,8 +82,9 @@ export function TemplateFeedStage({ feed, actions, children }: {
       <div className="om-sa-template-feed-stage">{children}</div>
       {feed && (
         <div className="om-sa-template-feed-rail" role="toolbar" aria-label={t('Switch template')} aria-orientation={placement === 'side' ? 'vertical' : 'horizontal'}>
-          <div className="om-sa-template-feed-group">
+          <div className="om-sa-template-feed-nav">
             <TemplateFeedAction
+              variant="circle"
               icon="arrow-down-s-line"
               iconStyle={{ transform: 'rotate(180deg)' }}
               label={t('Prev game')}
@@ -93,10 +94,8 @@ export function TemplateFeedStage({ feed, actions, children }: {
               disabled={!feed.position.prevId}
               onClick={() => feed.onStep(-1)}
             />
-            <span className="om-sa-template-feed-count" aria-live="polite">
-              {t('{current} / {total}', { current: feed.position.index + 1, total: feed.position.total })}
-            </span>
             <TemplateFeedAction
+              variant="primary"
               icon="arrow-down-s-line"
               label={t('Next game')}
               ariaLabel={t('Next template')}
@@ -105,21 +104,23 @@ export function TemplateFeedStage({ feed, actions, children }: {
               disabled={!feed.position.nextId}
               onClick={() => feed.onStep(1)}
             />
+            <span className="om-sa-template-feed-count" aria-live="polite">
+              {t('{current} / {total}', { current: feed.position.index + 1, total: feed.position.total })}
+            </span>
           </div>
-          {actions && (
-            <>
-              <span className="om-sa-template-feed-divider" aria-hidden="true" />
-              <div className="om-sa-template-feed-group">{actions}</div>
-            </>
-          )}
+          {actions && <div className="om-sa-template-feed-actions">{actions}</div>}
         </div>
       )}
     </div>
   );
 }
 
-/** A round rail button with a short label under it, matching the community game feed. */
+/**
+ * A rail button with a short label under it, matching the community game feed:
+ * `plain` is a bare icon, `circle` a dark round button, `primary` the green round button (Next, Remix).
+ */
 export function TemplateFeedAction({
+  variant = 'plain',
   icon,
   iconStyle,
   label,
@@ -130,6 +131,7 @@ export function TemplateFeedAction({
   disabled,
   onClick,
 }: {
+  variant?: 'plain' | 'circle' | 'primary';
   icon: string;
   iconStyle?: CSSProperties;
   label: string;
@@ -145,13 +147,16 @@ export function TemplateFeedAction({
       variant="plain"
       type="button"
       className="om-sa-template-feed-action"
+      data-variant={variant}
       aria-label={ariaLabel}
       aria-pressed={pressed}
       data-active={pressed || undefined}
       disabled={disabled}
       onClick={onClick}
     >
-      <RemixIcon name={icon} size={18} style={iconStyle} />
+      <span className="om-sa-template-feed-action-icon" aria-hidden="true">
+        <RemixIcon name={icon} size={variant === 'plain' ? 18 : 20} style={iconStyle} />
+      </span>
       <span className="om-sa-template-feed-action-label">{label}</span>
     </Button>
   );
