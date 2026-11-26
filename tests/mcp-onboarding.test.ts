@@ -293,3 +293,38 @@ test('library handbook capability documents single maxEdge and batch contact-she
   assert.match(library.prompt, /action=read.*maxEdge 128–1024/);
   assert.match(library.prompt, /contact sheet.*action=read items=/);
 });
+
+test('capability-center handbook documents live sound-effects, 3d-asset (.glb), and 3d-world capabilities with spend approval and requestId resumption', () => {
+  const center = mcpCapabilities.find(item => item.id === 'capability-center')!;
+  assert.match(center.description, /sound effects/i);
+  assert.match(center.description, /\.glb/);
+  assert.match(center.description, /3D worlds/i);
+  assert.match(center.prompt, /sound-effects.*3d-asset.*3d-world/);
+  assert.match(center.prompt, /requiresExplicitApproval/);
+  assert.match(center.prompt, /reuse the same requestId/);
+
+  const spatial = mcpScenarios.find(item => item.id === 'spatial-scene')!;
+  assert.match(spatial.description, /3d-asset and 3d-world/);
+  assert.doesNotMatch(spatial.description, /does not support direct generation/i);
+
+  const sfx = mcpScenarios.find(item => item.id === 'sound-effects-generate')!;
+  assert.ok(sfx);
+  assert.match(sfx.prompt, /capabilityId="sound-effects"/);
+  assert.match(sfx.prompt, /Confirm spend/i);
+  assert.match(sfx.prompt, /stable requestId/);
+
+  const asset3d = mcpScenarios.find(item => item.id === 'asset-3d-generate')!;
+  assert.ok(asset3d);
+  assert.match(asset3d.description, /\.glb/);
+  assert.match(asset3d.description, /at most 1 reference image/);
+  assert.match(asset3d.prompt, /capabilityId="3d-asset"/);
+  assert.match(asset3d.prompt, /boneNames/);
+  assert.match(asset3d.prompt, /requestId/);
+
+  const faq = mcpFaq.find(([question]) => question === 'Can I generate 3D meshes (.glb), 3D worlds and sound effects via MCP?');
+  assert.ok(faq);
+  assert.match(faq![1], /tripo-3\.0/);
+  assert.match(faq![1], /worldlabs-atlas/);
+  assert.match(faq![1], /elevenlabs-sound-v3/);
+  assert.match(faq![1], /requestId/);
+});

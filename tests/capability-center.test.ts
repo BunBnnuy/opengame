@@ -1271,6 +1271,26 @@ test('3d-asset capability gates honestly on AMR 3d_generations and executes Trip
       assert.deepEqual(submitted3dTasks[beforeRetarget].parameters.animations, ['preset:idle', 'preset:walk', 'preset:slash']);
       assert.deepEqual(retargeted.result.requestedAnimations, ['preset:idle', 'preset:walk', 'preset:slash']);
       assert.equal(retargeted.result.animations, 1);
+
+      // Default operation="auto" with only parameters.original_model_task_id infers "rig" instead of paying for a fresh text_to_model mesh.
+      const described3d = await api.call('openmotion_capability_discover', { action: 'describe', capabilityId: '3d-asset' });
+      assert.equal(described3d.capability.input.controls[0]?.defaultValue, 'auto');
+      const beforeAutoOriginal = submitted3dTasks.length;
+      const autoRig = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'tripo-auto-reuse-task',
+        capabilityId: '3d-asset',
+        model: 'opendesign:tripo-3.0',
+        parameters: {
+          slim: false,
+          original_model_task_id: rigOnly.result.baseTaskId,
+        },
+        name: 'Knight Auto Reused Rig',
+      });
+      assert.equal(submitted3dTasks.length - beforeAutoOriginal, 1);
+      assert.equal(submitted3dTasks[beforeAutoOriginal].operation, 'rig');
+      assert.equal(submitted3dTasks[beforeAutoOriginal].parameters.original_model_task_id, rigOnly.result.baseTaskId);
+      assert.equal(autoRig.result.operation, 'rig');
     } finally {
       clearOpenDesign3dDiscoveryCache();
     }
@@ -1297,10 +1317,22 @@ test('3d-world capability gates honestly on AMR world_generations and follows Wo
         }
         return new Response(JSON.stringify({ models }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
+      if (url.endsWith('/api/v1/media/uploads') && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          asset_id: 'world_upload_ref_1',
+          upload_url: 'https://amr-mock.example.com/upload/world-ref-1',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url === 'https://amr-mock.example.com/upload/world-ref-1' && init?.method === 'PUT') {
+        return new Response(null, { status: 200 });
+      }
+      if (url.endsWith('/api/v1/media/uploads/world_upload_ref_1/commit') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ asset_id: 'world_upload_ref_1', status: 'ready' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       if (url.endsWith('/api/v1/media/worlds/tasks') && init?.method === 'POST') {
         const body = JSON.parse(String(init.body ?? '{}'));
         worldPosts.push(body);
-        const taskId = body.operation === 'atlasTextToImage'
+        const taskId = body.operation === 'atlasTextToImage' || body.operation === 'images2PosedRGBD' || body.operation === 'atlasGenerate'
           ? 'world_task_t2i'
           : body.operation === 'posedImages2Splats'
             ? 'world_task_splats'
@@ -1369,7 +1401,7 @@ test('3d-world capability gates honestly on AMR world_generations and follows Wo
 
       const described = await api.call('openmotion_capability_discover', { action: 'describe', capabilityId: '3d-world' });
       assert.equal(described.capability.input.controls[0]?.key, 'operation');
-      assert.equal(described.capability.input.controls[0]?.defaultValue, 'atlasTextToImage');
+      assert.equal(described.capability.input.controls[0]?.defaultValue, 'auto');
 
       const models3d = await api.call('openmotion_capability_discover', { action: 'models', modality: '3d', refresh: true });
       assert.equal(models3d.setupRequired, false);
@@ -1456,6 +1488,44 @@ test('3d-world capability gates honestly on AMR world_generations and follows Wo
         }),
         /splats2Mesh/,
       );
+
+      // 5) Default operation="auto" stays reachable through openmotion_capability_run:
+      //    (a) pinned reference image + empty prompt auto-infers images2PosedRGBD
+      const refPngPath = await makePng(store.directory, 'world-ref-input.png', '0x10b981');
+      const refAsset = await api.call('openmotion_asset_manage', {
+        action: 'import',
+        requestId: 'import-world-ref-1',
+        sourcePath: refPngPath,
+        name: 'World Input Ref',
+      });
+      const beforeAutoRgbd = worldPosts.length;
+      const autoRgbd = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'world-atlas-auto-rgbd',
+        capabilityId: '3d-world',
+        references: [{ assetId: refAsset.asset.id, versionId: refAsset.asset.currentVersionId }],
+        name: 'Auto Posed RGBD',
+      });
+      assert.equal(worldPosts.length - beforeAutoRgbd, 1);
+      assert.equal(worldPosts[beforeAutoRgbd].operation, 'images2PosedRGBD');
+      assert.deepEqual(worldPosts[beforeAutoRgbd].image_asset_ids, ['world_upload_ref_1']);
+      assert.equal(autoRgbd.result.operation, 'images2PosedRGBD');
+
+      //    (b) contextFrames + targetCameras alone auto-infers atlasGenerate
+      const beforeAutoGen = worldPosts.length;
+      const autoGen = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'world-atlas-auto-gen',
+        capabilityId: '3d-world',
+        parameters: {
+          contextFrames: [{ frameId: 'f0' }],
+          targetCameras: [{ pose: [0, 0, 1] }],
+        },
+        name: 'Auto Atlas Generate',
+      });
+      assert.equal(worldPosts.length - beforeAutoGen, 1);
+      assert.equal(worldPosts[beforeAutoGen].operation, 'atlasGenerate');
+      assert.equal(autoGen.result.operation, 'atlasGenerate');
     } finally {
       clearOpenDesign3dDiscoveryCache();
     }

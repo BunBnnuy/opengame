@@ -241,8 +241,9 @@ export const asset3dCapabilityControls: readonly CapabilityControl[] = [
   {
     key: 'operation',
     label: '3D workflow',
-    defaultValue: 'text_to_model',
+    defaultValue: 'auto',
     choices: [
+      { value: 'auto', label: 'Auto (infer from inputs)', prompt: 'automatically select rig/rig_retarget when original_model_task_id or rigPreset is supplied, image_to_model when a reference image is pinned, or text_to_model from text' },
       { value: 'text_to_model', label: 'Text to 3D mesh', prompt: 'generate a static PBR 3D mesh (.glb) from a text prompt' },
       { value: 'image_to_model', label: 'Image to 3D mesh (rigid)', prompt: 'reconstruct a static PBR 3D mesh (.glb) from 1 clean isolated concept image — use for rigid objects (vehicles, weapons, instanced foreground props/landmarks), not articulated humanoids' },
       { value: 'rig', label: 'Humanoid auto-rig (2-step)', prompt: 'generate from 1 front-facing empty-handed A-pose concept image and auto-rig with a real Mixamo skeleton (.glb + boneNames + rigTaskId for optional later retargeting)' },
@@ -279,8 +280,9 @@ export const world3dCapabilityControls: readonly CapabilityControl[] = [
   {
     key: 'operation',
     label: 'Atlas v2 workflow',
-    defaultValue: 'atlasTextToImage',
+    defaultValue: 'auto',
     choices: [
+      { value: 'auto', label: 'Auto (infer from inputs)', prompt: 'automatically select atlasGenerate when contextFrames and targetCameras are supplied, images2PosedRGBD when references are pinned without a prompt, or atlasTextToImage from text' },
       { value: 'atlasTextToImage', label: 'Text to scene frame (PNG)', prompt: 'generate a scene concept image from text for downstream World Labs Atlas pipelines' },
       { value: 'images2PosedRGBD', label: 'Images to posed RGB-D', prompt: 'estimate camera poses and RGB-D depth from reference images' },
       { value: 'atlasGenerate', label: 'Novel-view synthesis', prompt: 'generate spatially consistent views from parameters.contextFrames and parameters.targetCameras' },

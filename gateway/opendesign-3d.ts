@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { inspectGlb } from '../scripts/game-glb-inspect.mjs';
+import { verificationBinaries } from '../scripts/verify-export.ts';
 import type { WorkspaceStore } from '../workspace.ts';
 import { atomicAssetJson, assetHash } from './asset-library.ts';
 import type { CapabilityScriptContext, CapabilityScriptOutput } from './capability-scripts.ts';
@@ -292,7 +293,8 @@ async function prepareUploadReferenceBytes(filePath: string): Promise<{ bytes: B
       if (process.platform === 'darwin') {
         await execFileAsync('sips', ['-s', 'format', 'jpeg', '-s', 'formatOptions', '86', '-Z', '1536', filePath, '--out', tmpOut], { timeout: 15_000 });
       } else {
-        await execFileAsync('ffmpeg', ['-y', '-i', filePath, '-vf', "scale='min(1536,iw)':'min(1536,ih)':force_original_aspect_ratio=decrease", '-q:v', '4', tmpOut], { timeout: 15_000 });
+        const { ffmpeg } = verificationBinaries();
+        await execFileAsync(ffmpeg, ['-y', '-i', filePath, '-vf', "scale='min(1536,iw)':'min(1536,ih)':force_original_aspect_ratio=decrease", '-q:v', '4', tmpOut], { timeout: 15_000 });
       }
       const compressed = await readFile(tmpOut);
       if (compressed.length > 0 && compressed.length < bytes.length) {
@@ -604,7 +606,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   const preset = QUALITY_PRESETS[qualityKey];
 
   const explicitParamOp = typeof params.operation === 'string' && params.operation.trim() ? params.operation.trim() : undefined;
-  const optionOp = typeof ctx.options.operation === 'string' ? ctx.options.operation : 'auto';
+  const optionOp = typeof ctx.options.operation === 'string' && ctx.options.operation.trim() ? ctx.options.operation.trim() : 'auto';
   const originalTaskIdParam = typeof params.original_model_task_id === 'string' && params.original_model_task_id.trim()
     ? params.original_model_task_id.trim()
     : undefined;
@@ -626,10 +628,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   const hasRetargetAnimation = Boolean(animation || animationsList.length > 0);
 
   let effectiveOp = explicitParamOp ?? optionOp;
-  // Never silently ignore a pinned reference image when the caller left operation at default text_to_model/auto.
-  if (!explicitParamOp && (effectiveOp === 'auto' || effectiveOp === 'text_to_model') && ctx.references.length === 1) {
-    effectiveOp = hasRetargetAnimation ? 'rig_retarget' : rigOnlyPreset ? 'rig' : 'image_to_model';
-  } else if (effectiveOp === 'auto') {
+  if (effectiveOp === 'auto') {
     if (originalTaskIdParam) {
       effectiveOp = hasRetargetAnimation ? 'rig_retarget' : 'rig';
     } else if (ctx.references.length === 1) {
@@ -637,6 +636,9 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
     } else {
       effectiveOp = hasRetargetAnimation ? 'rig_retarget' : rigOnlyPreset ? 'rig' : 'text_to_model';
     }
+  } else if (!explicitParamOp && effectiveOp === 'text_to_model' && ctx.references.length === 1) {
+    // Never silently ignore a pinned reference image when the caller left operation at text_to_model.
+    effectiveOp = hasRetargetAnimation ? 'rig_retarget' : rigOnlyPreset ? 'rig' : 'image_to_model';
   } else if ((effectiveOp === 'text_to_model' || effectiveOp === 'image_to_model') && (hasRetargetAnimation || rigOnlyPreset)) {
     if (effectiveOp === 'image_to_model' && ctx.references.length !== 1) {
       throw new Error('3d-asset image_to_model requires exactly 1 reference image asset');
@@ -975,8 +977,10 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
     ?? config.models[0]?.modelId
     ?? DEFAULT_WORLD_MODEL;
 
-  const explicitParamOp = typeof params.operation === 'string' && params.operation.trim() ? params.operation.trim() : undefined;
-  const optionOp = typeof ctx.options.operation === 'string' && ctx.options.operation.trim() ? ctx.options.operation.trim() : undefined;
+  const rawParamOp = typeof params.operation === 'string' && params.operation.trim() ? params.operation.trim() : undefined;
+  const explicitParamOp = rawParamOp && rawParamOp !== 'auto' ? rawParamOp : undefined;
+  const rawOptionOp = typeof ctx.options.operation === 'string' && ctx.options.operation.trim() ? ctx.options.operation.trim() : undefined;
+  const optionOp = rawOptionOp && rawOptionOp !== 'auto' ? rawOptionOp : undefined;
   const hasAtlasGenerateInputs = Array.isArray(params.contextFrames) && params.contextFrames.length > 0
     && Array.isArray(params.targetCameras) && params.targetCameras.length > 0;
 
