@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -755,13 +755,62 @@ async function normalizeDirectoryForCompare(dir: string): Promise<string> {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+const ACTIVE_EXPORT_JOB_STATES = new Set(['pending', 'running', 'cancelling']);
+const ACTIVE_GATEWAY_JOB_STATES = new Set(['queued', 'running']);
+
 async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
+  const seenExportIds = new Set<string>();
+
+  // 1) Authoritative per-export records (<dataDirectory>/jobs/<id>/job.json)
   try {
-    const job = JSON.parse(await readFile(path.join(dataDirectory, 'job.json'), 'utf8'));
-    return typeof job?.state === 'string' && ['pending', 'running', 'cancelling'].includes(job.state);
+    const entries = await readdir(path.join(dataDirectory, 'jobs'), { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const job = JSON.parse(await readFile(path.join(dataDirectory, 'jobs', entry.name, 'job.json'), 'utf8'));
+        const id = typeof job?.id === 'string' ? job.id : entry.name;
+        seenExportIds.add(id);
+        if (typeof job?.state === 'string' && ACTIVE_EXPORT_JOB_STATES.has(job.state)) {
+          return true;
+        }
+      } catch {
+        // Ignore individual missing or unreadable job files.
+      }
+    }
   } catch {
-    return false;
+    // Missing jobs/ directory.
   }
+
+  // 2) Current export mirror (<dataDirectory>/export.json), unless superseded by jobs/<id>/job.json
+  try {
+    const current = JSON.parse(await readFile(path.join(dataDirectory, 'export.json'), 'utf8'));
+    const alreadyChecked = typeof current?.id === 'string' && seenExportIds.has(current.id);
+    if (!alreadyChecked && typeof current?.state === 'string' && ACTIVE_EXPORT_JOB_STATES.has(current.state)) {
+      return true;
+    }
+  } catch {
+    // Missing or unreadable export.json.
+  }
+
+  // 3) Active Model Gateway generation jobs (<dataDirectory>/model-gateway/jobs/<id>.json)
+  try {
+    const files = await readdir(path.join(dataDirectory, 'model-gateway', 'jobs'));
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const job = JSON.parse(await readFile(path.join(dataDirectory, 'model-gateway', 'jobs', file), 'utf8'));
+        if (typeof job?.state === 'string' && ACTIVE_GATEWAY_JOB_STATES.has(job.state)) {
+          return true;
+        }
+      } catch {
+        // Ignore individual unreadable gateway job files.
+      }
+    }
+  } catch {
+    // Missing model-gateway/jobs/ directory.
+  }
+
+  return false;
 }
 
 export async function shutdownPreviewService(

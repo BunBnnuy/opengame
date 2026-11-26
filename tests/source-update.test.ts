@@ -1118,6 +1118,71 @@ test('non-macOS backend shutdown stops matching idle preview service, defers whe
   assert.deepEqual(noPidOutcome, { restarted: false, deferred: true });
   assert.deepEqual(busyKills, []);
 
+  // 3b) Pre-update backend (omits health.activeWork) with running export in jobs/<id>/job.json -> defers without killing
+  const dataExportJob = path.join(root, 'export-job');
+  await mkdir(path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111'), { recursive: true });
+  await writeFile(path.join(dataExportJob, 'preview.json'), JSON.stringify({ port: busyPort, pid: 626262 }));
+  await writeFile(
+    path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111', 'job.json'),
+    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'running' }),
+  );
+  const exportJobOutcome = await shutdownPreviewService(dataExportJob, {
+    probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataExportJob }),
+    killProcess: pid => { busyKills.push(pid); },
+  });
+  assert.deepEqual(exportJobOutcome, { restarted: false, deferred: true });
+  assert.deepEqual(busyKills, []);
+
+  // 3c) Pre-update backend with running export in export.json mirror only -> defers without killing
+  const dataExportMirror = path.join(root, 'export-mirror');
+  await mkdir(dataExportMirror, { recursive: true });
+  await writeFile(path.join(dataExportMirror, 'preview.json'), JSON.stringify({ port: busyPort, pid: 636363 }));
+  await writeFile(path.join(dataExportMirror, 'export.json'), JSON.stringify({ id: '22222222-2222-2222-2222-222222222222', state: 'pending' }));
+  const exportMirrorOutcome = await shutdownPreviewService(dataExportMirror, {
+    probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataExportMirror }),
+    killProcess: pid => { busyKills.push(pid); },
+  });
+  assert.deepEqual(exportMirrorOutcome, { restarted: false, deferred: true });
+  assert.deepEqual(busyKills, []);
+
+  // 3d) Pre-update backend with queued Model Gateway job -> defers without killing
+  const dataGatewayJob = path.join(root, 'gateway-job');
+  await mkdir(path.join(dataGatewayJob, 'model-gateway', 'jobs'), { recursive: true });
+  await writeFile(path.join(dataGatewayJob, 'preview.json'), JSON.stringify({ port: busyPort, pid: 646464 }));
+  await writeFile(
+    path.join(dataGatewayJob, 'model-gateway', 'jobs', '33333333-3333-3333-3333-333333333333.json'),
+    JSON.stringify({ id: '33333333-3333-3333-3333-333333333333', state: 'queued' }),
+  );
+  const gatewayJobOutcome = await shutdownPreviewService(dataGatewayJob, {
+    probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataGatewayJob }),
+    killProcess: pid => { busyKills.push(pid); },
+  });
+  assert.deepEqual(gatewayJobOutcome, { restarted: false, deferred: true });
+  assert.deepEqual(busyKills, []);
+
+  // 3e) Once export job completes (even if export.json still lags), pre-update backend stops cleanly
+  await writeFile(
+    path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111', 'job.json'),
+    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'completed' }),
+  );
+  await writeFile(
+    path.join(dataExportJob, 'export.json'),
+    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'running' }),
+  );
+  let exportBackendAlive = true;
+  const completedKills: number[] = [];
+  const completedOutcome = await shutdownPreviewService(dataExportJob, {
+    probeHealth: async () => (exportBackendAlive ? { service: 'motion-preview', dataDirectory: dataExportJob } : null),
+    killProcess: pid => {
+      completedKills.push(pid);
+      exportBackendAlive = false;
+    },
+    waitMs: 500,
+    pollIntervalMs: 10,
+  });
+  assert.deepEqual(completedOutcome, { restarted: true, deferred: false });
+  assert.deepEqual(completedKills, [626262]);
+
   // 4) Different workspace or unrelated service on registered port -> ignored without killing
   const otherOutcome = await shutdownPreviewService(dataBusy, {
     probeHealth: async () => ({ service: 'motion-preview', dataDirectory: path.join(root, 'someone-else'), activeWork: false }),
