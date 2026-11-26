@@ -8,6 +8,7 @@ import { execute, pluginRoot } from '../hyperframes.ts';
 import { verificationBinaries } from '../scripts/verify-export.ts';
 import { Phase1Service } from '../phase1.ts';
 import { OpenDesignAccount } from '../gateway/account.ts';
+import { readCappedBytes } from '../gateway/network.ts';
 import { productionApi } from '../gateway/opendesign.ts';
 import { gatewayFor } from '../gateway/service.ts';
 import { clearOpenDesign3dDiscoveryCache } from '../gateway/opendesign-3d.ts';
@@ -1848,7 +1849,8 @@ test('direct account sound-effects discovers via control-key probe, enforces 450
       if (url === `${productionApi}/api/v1/media/audio/sound-effects` && init?.method === 'POST') {
         const body = JSON.parse(String(init.body ?? '{}'));
         sfxPosts.push(body);
-        return Response.json({ task_id: 'acct_sfx_task_1', status: 'queued' });
+        const taskId = sfxPosts.length === 1 ? 'acct_sfx_task_1' : 'acct_sfx_task_nosize';
+        return Response.json({ task_id: taskId, status: 'queued' });
       }
       if (url === `${productionApi}/api/v1/media/audio/tasks/acct_sfx_task_1`) {
         return Response.json({
@@ -1856,6 +1858,14 @@ test('direct account sound-effects discovers via control-key probe, enforces 450
           model: 'elevenlabs-sound-v3',
           status: 'succeeded',
           assets: [{ asset_id: 'acct_sfx_asset_1', size_bytes: wavBytes.length, mime_type: 'audio/wav', url: 'https://cdn.example.invalid/acct-gong.wav' }],
+        });
+      }
+      if (url === `${productionApi}/api/v1/media/audio/tasks/acct_sfx_task_nosize`) {
+        return Response.json({
+          task_id: 'acct_sfx_task_nosize',
+          model: 'elevenlabs-sound-v3',
+          status: 'succeeded',
+          assets: [{ asset_id: 'acct_sfx_asset_nosize', mime_type: 'audio/wav', url: 'https://cdn.example.invalid/acct-rain.wav' }],
         });
       }
       return new Response(JSON.stringify({ error: `unexpected ${url}` }), { status: 404 });
@@ -1928,6 +1938,37 @@ test('direct account sound-effects discovers via control-key probe, enforces 450
         model: 'elevenlabs-sound-v3',
         parameters: { duration_seconds: 3, loop: true, prompt_influence: 0.4, text: 'Rain hitting temple bronze bell' },
       });
+
+      // Fallback streaming download when AMR omits assets[0].size_bytes completes cleanly and enforces a streaming cap.
+      const noSizeSubmitted = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'acct-sfx-ok-nosize',
+        capabilityId: 'sound-effects',
+        model: 'account:elevenlabs-sound-v3',
+        prompt: 'Soft rain on temple roof tiles',
+      });
+      await gateway.tick();
+      await Promise.all([...gateway.active.values()].map(task => task.done));
+      const noSizeState = await api.call('openmotion_job_manage', { action: 'status', jobId: noSizeSubmitted.job.id });
+      assert.equal(noSizeState.job.state, 'completed', noSizeState.job.error);
+
+      let chunksPulled = 0;
+      let streamCancelled = false;
+      const endless = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunksPulled += 1;
+          controller.enqueue(new Uint8Array(64));
+        },
+        cancel() {
+          streamCancelled = true;
+        },
+      });
+      await assert.rejects(
+        () => readCappedBytes(new Response(endless, { status: 200 }), 128),
+        /exceeds/i,
+      );
+      assert.equal(streamCancelled, true);
+      assert.ok(chunksPulled <= 4, `expected early stream abort, pulled ${chunksPulled} chunks`);
     } finally {
       account.close();
       await gateway.close();

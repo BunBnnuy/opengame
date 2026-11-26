@@ -14,7 +14,7 @@ import { planMediaEntitlement } from './account-media.ts';
 import { registeredProvider } from '../shared/provider-registry.ts';
 import { defaultVideoAudioEnabled, resolveGenerationParameters } from '../shared/generation-options.ts';
 import { isSfxModel } from '../shared/audio-kind.ts';
-import { apiJson, MAX_MEDIA_BYTES, ProviderError, retryRead, streamMedia, type Fetcher } from './network.ts';
+import { apiJson, MAX_MEDIA_BYTES, ProviderError, readCappedBytes, retryRead, streamMedia, type Fetcher } from './network.ts';
 import { cloudImageParameters, mediaSubmitHeaders, productionApi, uploadInputs } from './opendesign.ts';
 import type { ProviderContext } from './providers.ts';
 import { resumableDownload, type DownloadProgress } from './resumable-download.ts';
@@ -1124,8 +1124,8 @@ export class OpenDesignAccount {
       if (!res.ok) throw new ProviderError('Audio download failed', res.status);
       return res;
     }, signal, 3);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length < 24 || bytes.length > MAX_MEDIA_BYTES) throw new Error(jobMessages.resultUnreadable);
+    const bytes = await readCappedBytes(response, MAX_MEDIA_BYTES);
+    if (bytes.length < 24) throw new Error(jobMessages.resultUnreadable);
     return bytes;
   }
   private async imageResult(job: GenerationJob, taskId: string, directory: string, signal: AbortSignal,
