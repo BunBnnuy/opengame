@@ -2089,6 +2089,13 @@ export function ArtifactBrowserPane({
     ? communityGames.find(game => `game:${game.id}` === activeArtifact.id)?.id
     : undefined;
   const [communityReactions, setCommunityReactions] = useState<Record<string, -1 | 0 | 1>>(readCommunityReactions);
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === null || event.key === COMMUNITY_REACTIONS_KEY) setCommunityReactions(readCommunityReactions());
+    };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, []);
   const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && (communityReactionId || (activeGameProjectId && isGameTrial)));
   // Viewer reactions from the local game service, loaded once while the rail is in use.
   const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }>>({});
@@ -2124,11 +2131,11 @@ export function ArtifactBrowserPane({
   // value 1 = like, -1 = dislike; pressing the active one again clears it.
   const toggleGameReaction = useCallback((value: 1 | -1) => {
     if (communityReactionId) {
-      setCommunityReactions(prev => {
-        const next = { ...prev, [communityReactionId]: prev[communityReactionId] === value ? 0 as const : value };
-        writeCommunityReactions(next);
-        return next;
-      });
+      // Merge into what is stored now, so another tab's likes are never overwritten by this tab's copy.
+      const stored = readCommunityReactions();
+      const next = { ...stored, [communityReactionId]: stored[communityReactionId] === value ? 0 as const : value };
+      writeCommunityReactions(next);
+      setCommunityReactions(next);
       return;
     }
     const gameId = activeGameProjectId;
