@@ -8,6 +8,8 @@ import { apiJson, publicProviderFetch, ProviderError, retryRead, type Fetcher } 
 import type { ProviderAdapter, ProviderContext } from './providers.ts';
 
 export const productionApi = 'https://amr-api.open-design.ai';
+const CLOUD_MODELS_PATH = '/api/v1/media/models?include_audio=true';
+const CLOUD_MODEL_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,179}$/;
 
 /** Custom Cloud gateways keep their existing idempotency protocol. */
 export function mediaSubmitHeaders(baseUrl: string, jobId: string): Record<string, string> {
@@ -18,9 +20,9 @@ export function mediaSubmitHeaders(baseUrl: string, jobId: string): Record<strin
 }
 
 export async function cloudModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Model[]> {
-  const body = await apiJson(fetcher, baseUrl + '/api/v1/media/models?include_audio=true', { headers: { Authorization: `Bearer ${key}` } });
+  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${key}` } });
   if (!Array.isArray(body.models)) throw new Error('OpenDesign Cloud catalogue format changed');
-  return body.models.filter((row: any) => typeof row.model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,179}$/.test(row.model)
+  return body.models.filter((row: any) => typeof row.model === 'string' && CLOUD_MODEL_ID_PATTERN.test(row.model)
     && ['image', 'video', 'audio', 'audio_speech', 'audio_music', 'audio_sound_effects'].includes(row.kind)).map((row: any) => ({
     id: 'opendesign:' + row.model, provider: 'opendesign', modelId: row.model, label: row.model,
     modality: row.kind.startsWith('audio') ? 'audio' : row.kind,
@@ -38,30 +40,35 @@ export type Cloud3dModelEntry = {
   bestFor?: string[];
 };
 
-export async function cloud3dModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
+async function cloudSpatialModels(
+  baseUrl: string,
+  key: string,
+  kind: '3d_generations' | 'world_generations',
+  labels: Record<string, string>,
+  fetcher: Fetcher = publicProviderFetch,
+): Promise<Cloud3dModelEntry[]> {
   // AMR returns only image/video unless include_audio=true is passed.
-  const body = await apiJson(fetcher, baseUrl + '/api/v1/media/models?include_audio=true', { headers: { Authorization: `Bearer ${key}` } });
+  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${key}` } });
   if (!Array.isArray(body.models)) return [];
   return body.models
-    .filter((row: any) => typeof row.model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,179}$/.test(row.model) && row.kind === '3d_generations')
+    .filter((row: any) => typeof row.model === 'string' && CLOUD_MODEL_ID_PATTERN.test(row.model) && row.kind === kind)
     .map((row: any) => ({
       modelId: row.model,
-      label: row.model === 'tripo-3.0' ? 'Tripo 3D v3 (GLB + PBR + optional rig/retarget)' : row.model,
+      label: labels[row.model] ?? row.model,
       ...(row.capabilities && typeof row.capabilities === 'object' && !Array.isArray(row.capabilities) ? { capabilities: row.capabilities } : {}),
     }));
 }
 
+export async function cloud3dModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
+  return cloudSpatialModels(baseUrl, key, '3d_generations', {
+    'tripo-3.0': 'Tripo 3D v3 (GLB + PBR + optional rig/retarget)',
+  }, fetcher);
+}
+
 export async function cloudWorldModels(baseUrl: string, key: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
-  // AMR returns only image/video unless include_audio=true is passed.
-  const body = await apiJson(fetcher, baseUrl + '/api/v1/media/models?include_audio=true', { headers: { Authorization: `Bearer ${key}` } });
-  if (!Array.isArray(body.models)) return [];
-  return body.models
-    .filter((row: any) => typeof row.model === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,179}$/.test(row.model) && row.kind === 'world_generations')
-    .map((row: any) => ({
-      modelId: row.model,
-      label: row.model === 'worldlabs-atlas' ? 'World Labs Atlas v2 (Scene frames, RGB-D, Splats & Mesh)' : row.model,
-      ...(row.capabilities && typeof row.capabilities === 'object' && !Array.isArray(row.capabilities) ? { capabilities: row.capabilities } : {}),
-    }));
+  return cloudSpatialModels(baseUrl, key, 'world_generations', {
+    'worldlabs-atlas': 'World Labs Atlas v2 (Scene frames, RGB-D, Splats & Mesh)',
+  }, fetcher);
 }
 
 /** Edit-capable image models accept references; video models with input images accept a first frame. */

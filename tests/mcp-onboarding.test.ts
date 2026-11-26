@@ -301,7 +301,8 @@ test('capability-center handbook documents live sound-effects, 3d-asset (.glb), 
   assert.match(center.description, /3D worlds/i);
   assert.match(center.prompt, /sound-effects.*3d-asset.*3d-world/);
   assert.match(center.prompt, /requiresExplicitApproval/);
-  assert.match(center.prompt, /reuse the same requestId/);
+  assert.match(center.prompt, /reuse the identical requestId/);
+  assert.match(center.prompt, /return \{asset, version, mediaUrl, result\} directly/);
 
   const spatial = mcpScenarios.find(item => item.id === 'spatial-scene')!;
   assert.match(spatial.description, /3d-asset and 3d-world/);
@@ -321,9 +322,11 @@ test('capability-center handbook documents live sound-effects, 3d-asset (.glb), 
   assert.ok(asset3d);
   assert.match(asset3d.description, /\.glb/);
   assert.match(asset3d.description, /at most 1 reference image/);
+  assert.ok(!(asset3d.tools as readonly string[]).includes('openmotion_job_manage'));
+  assert.doesNotMatch(asset3d.prompt, /openmotion_job_manage/);
   assert.match(asset3d.prompt, /capabilityId="3d-asset"/);
-  assert.match(asset3d.prompt, /boneNames/);
-  assert.match(asset3d.prompt, /requestId/);
+  assert.match(asset3d.prompt, /mediaUrl, result\.boneNames and result\.rigTaskId/);
+  assert.match(asset3d.prompt, /reuse the identical requestId only if the client call itself timed out/);
 
   const faq = mcpFaq.find(([question]) => question === 'Can I generate 3D meshes (.glb), 3D worlds and sound effects via MCP?');
   assert.ok(faq);
