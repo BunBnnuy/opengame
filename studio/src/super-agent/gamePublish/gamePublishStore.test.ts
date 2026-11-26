@@ -366,4 +366,18 @@ describe('gamePublishStore', () => {
     expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkToo: false, linkError: undefined });
     expect(gamePublishThreadFor('chat-1').some(entry => entry.kind === 'link-failed')).toBe(false);
   });
+
+  it('deferred link persists in session across close/reopen and resolves cleanly for signed-in or guest', async () => {
+    gamePublishActions.open(input);
+    gamePublishActions.choose(input.artifactId, 'xiaohongshu', { deferLink: true });
+    expect(publish).not.toHaveBeenCalled();
+    expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkToo: true, linkDeferred: true });
+    gamePublishActions.close(input.artifactId);
+    gamePublishActions.reopen(input.artifactId);
+    expect(gamePublishSessionFor(input.artifactId)?.linkDeferred).toBe(true);
+    gamePublishActions.resolveDeferredLink(input.artifactId, true);
+    await settle();
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkDeferred: false, linkUrl: 'https://play.opendesign.app/g/abc' });
+  });
 });

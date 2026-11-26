@@ -63,6 +63,8 @@ export interface GamePublishSession {
   linkPublishing: boolean;
   /** OpenDesign is selected by default: picking a platform also publishes the OpenDesign play link. */
   linkToo: boolean;
+  /** True when a platform was picked while account state was still loading, so link publish waits until resolved. */
+  linkDeferred?: boolean;
   linkError?: { message: string; authRequired: boolean };
   published: GamePublishPlatformId[];
   /** Developer tool the user must confirm before the platform steps. */
@@ -245,13 +247,30 @@ export const gamePublishActions = {
   },
   showList(artifactId: string) { update(artifactId, { view: 'list' }); },
   /** The OpenDesign choice at the top of the platform list (selected by default). */
-  setLinkToo(artifactId: string, on: boolean) { update(artifactId, { linkToo: on }); },
+  setLinkToo(artifactId: string, on: boolean) { update(artifactId, { linkToo: on, linkDeferred: false }); },
+  /** Resolves a deferred OpenDesign link decision once the account summary resolves or fails. */
+  resolveDeferredLink(artifactId: string, signedIn: boolean) {
+    const session = sessions.get(artifactId);
+    if (!session?.linkDeferred) return;
+    if (signedIn) {
+      update(artifactId, { linkDeferred: false });
+      const latest = sessions.get(artifactId)!;
+      if (latest.linkToo && !latest.linkUrl && !latest.linkPublishing && !latest.linkError) {
+        void gamePublishActions.publishLink(artifactId);
+      }
+      return;
+    }
+    update(artifactId, {
+      linkDeferred: false,
+      ...(session.platformId && session.platformId !== 'telegram' ? { linkToo: false, linkError: undefined } : {}),
+    });
+  },
   /** Clears an OpenDesign link failure and continues with the chosen platform only. */
   dismissLinkError(artifactId: string) {
     const session = sessions.get(artifactId);
     if (!session) return;
     removeEntries(session, isLinkFailureEntry);
-    update(artifactId, { linkToo: false, linkError: undefined });
+    update(artifactId, { linkToo: false, linkDeferred: false, linkError: undefined });
   },
   /** Publishes the game on OpenDesign Cloud, the same way the toolbar Share button does. */
   async publishLink(artifactId: string): Promise<void> {
@@ -260,11 +279,11 @@ export const gamePublishActions = {
     removeEntries(session, isLinkFailureEntry);
     if (!session.link) {
       const linkError = { message: 'This game cannot get a share link yet', authRequired: false };
-      update(artifactId, { linkError });
+      update(artifactId, { linkError, linkDeferred: false });
       pushEntry(sessions.get(artifactId)!, { kind: 'link-failed', message: linkError.message, authRequired: false });
       return;
     }
-    update(artifactId, { linkPublishing: true, linkError: undefined });
+    update(artifactId, { linkPublishing: true, linkDeferred: false, linkError: undefined });
     const work = startWork(artifactId, 'link', 'Publishing on OpenDesign');
     try {
       const { url } = await publishGameLink(session.link);
@@ -303,6 +322,7 @@ export const gamePublishActions = {
       toolCheck: undefined,
       package: undefined,
       status: WAITING,
+      linkDeferred: Boolean(options?.deferLink),
       ...(guestOnNonLinkPlatform ? { linkToo: false, linkError: undefined } : {}),
       ...(guestOnTelegram ? { linkError: undefined } : {}),
     });

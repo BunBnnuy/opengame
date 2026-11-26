@@ -29,22 +29,14 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
   onNotify?: Notify;
 }) {
   const { t } = useI18n();
-  const { account } = useAccountSummary();
+  const { account, error: accountError } = useAccountSummary();
   const session = useGamePublishSession(artifactId);
-  const deferredLinkRef = useRef(false);
 
-  // If the user picked a platform while account state was still loading, resolve the deferred OpenDesign link once loaded.
+  // Resolve any deferred OpenDesign link decision once the account summary resolves or fails, even after panel reopen.
   useEffect(() => {
-    if (!deferredLinkRef.current || !account || !session) return;
-    deferredLinkRef.current = false;
-    if (account.state === 'signed-in') {
-      if (session.linkToo && !session.linkUrl && !session.linkPublishing && !session.linkError) {
-        void gamePublishActions.publishLink(artifactId);
-      }
-    } else if (session.platformId && session.platformId !== 'telegram') {
-      gamePublishActions.setLinkToo(artifactId, false);
-    }
-  }, [account, artifactId, session]);
+    if (!session?.linkDeferred || (!account && !accountError)) return;
+    gamePublishActions.resolveDeferredLink(artifactId, account?.state === 'signed-in');
+  }, [account, accountError, artifactId, session?.linkDeferred]);
 
   if (!session?.open) return null;
   const platform = gamePublishPlatform(session.platformId);
@@ -83,13 +75,11 @@ export function GamePublishPanel({ artifactId, coverUrl, onNotify }: {
       ]}
       onChange={id => {
         if (!id) return;
-        if (!account) {
-          deferredLinkRef.current = true;
+        if (!account && !accountError) {
           gamePublishActions.choose(artifactId, id, { deferLink: true });
           return;
         }
-        deferredLinkRef.current = false;
-        gamePublishActions.choose(artifactId, id, { signedIn: account.state === 'signed-in' });
+        gamePublishActions.choose(artifactId, id, { signedIn: account?.state === 'signed-in' });
       }}
     />
   );
