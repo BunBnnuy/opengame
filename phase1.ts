@@ -432,7 +432,7 @@ export class Phase1Service {
       if (args.action === 'scenario') {
         return scenarioOperation(scenarioRunsFor(this.store, this.context.tracking), args.scenario, {
           origin: () => this.context.origin(),
-          assets: input => assetOperation(this.store, input, (i, o) => this.importAssets(i, o), this.context.tracking, channel, host),
+          assets: input => assetOperation(this.store, input, (i, o) => this.importAssets(i, o), this.context.tracking, channel, host, 'scenario'),
           design: designProjectsFor(this.store.directory),
           resolveAsset: ref => new AssetLibrary(this.store).resolve(ref),
           createMotionProject: input => this.dispatch('motion_create_project', input, host, channel),

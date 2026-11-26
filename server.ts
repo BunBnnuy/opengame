@@ -1415,12 +1415,12 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
       if (url.pathname === '/api/models/custom' && req.method === 'POST') return json(res, 200, await gateway.registerModel(await input(req)));
       if (url.pathname === '/api/generations' && req.method === 'POST') {
         if (!context.studio?.alive()) return json(res, 503, { error: 'Open the Studio before generating media' });
-        return json(res, 202, { job: await gateway.submit(await input(req)) });
+        return json(res, 202, { job: await gateway.submit(await input(req), undefined, { entrySurface: 'studio' }) });
       }
       if (url.pathname === '/api/generations' && req.method === 'GET') return json(res, 200, { jobs: (await gateway.listJobs(url.searchParams.get('projectId') ?? undefined)).slice(0, 50) });
       const generation = url.pathname.match(/^\/api\/generations\/([a-f0-9-]+)(\/cancel)?$/);
       if (generation && req.method === 'GET' && !generation[2]) return json(res, 200, { job: await gateway.getJob(generation[1]) });
-      if (generation && req.method === 'POST' && generation[2]) return json(res, 200, { job: await gateway.cancel(generation[1]) });
+      if (generation && req.method === 'POST' && generation[2]) return json(res, 200, { job: await gateway.cancel(generation[1], { source: 'studio' }) });
       return json(res, 404, { error: 'Unknown model gateway operation' });
     }
     if (url.pathname === '/api/templates' && req.method === 'GET') return json(res, 200, { templates });

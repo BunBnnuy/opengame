@@ -43,7 +43,10 @@ const atlas: ProviderAdapter = {
         if (!media.length) throw new Error('Atlas completed without media output');
         return media.map(value => !/^(https:|data:)/.test(value) && job.modality === 'image' && /^[A-Za-z0-9+/=\s]+$/.test(value) ? `data:image/png;base64,${value}` : value);
       }
-      if (['failed', 'timeout', 'cancelled', 'canceled'].includes(result.status)) throw new Error(`Atlas generation ${result.status}`);
+      if (['failed', 'timeout', 'cancelled', 'canceled'].includes(result.status)) {
+        await ctx.progress('remote_failed');
+        throw new Error(`Atlas generation ${result.status}`);
+      }
       await ctx.progress('generating');
     }
   },
@@ -69,7 +72,10 @@ const wavespeed: ProviderAdapter = {
         if (!media.length) throw new Error('WaveSpeed completed without media output');
         return media;
       }
-      if (['failed', 'cancelled', 'canceled', 'timeout', 'deleted'].includes(data.status)) throw new Error(`WaveSpeed generation ${data.status}`);
+      if (['failed', 'cancelled', 'canceled', 'timeout', 'deleted'].includes(data.status)) {
+        await ctx.progress('remote_failed');
+        throw new Error(`WaveSpeed generation ${data.status}`);
+      }
       await delay(ctx.pollMs ?? (job.modality === 'video' ? 5000 : 2000), undefined, { signal: ctx.signal });
       data = predictionData(await apiJson(ctx.fetcher, `${waveSpeedOrigin}/api/v3/predictions/${taskId}/result`, { headers, signal: ctx.signal }), 'WaveSpeed');
       await ctx.progress('generating');
@@ -100,7 +106,10 @@ const fal: ProviderAdapter = {
         await delay(ctx.pollMs ?? 2000, undefined, { signal: ctx.signal });
         const status = await apiJson(ctx.fetcher, statusUrl, { headers, signal: ctx.signal });
         if (status.status === 'COMPLETED') {
-          if (status.error) throw new Error('fal generation failed');
+          if (status.error) {
+            await ctx.progress('remote_failed');
+            throw new Error('fal generation failed');
+          }
           const result = await apiJson(ctx.fetcher, resultUrl, { headers, signal: ctx.signal });
           const media = outputs(result, job.modality);
           if (!media.length) throw new Error('fal completed without media output');

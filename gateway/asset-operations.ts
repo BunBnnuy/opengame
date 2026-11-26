@@ -1,6 +1,7 @@
 import { buildCapabilityParameters } from '../shared/capability-registry.ts';
 import type { OmTracking } from '../shared/tracking.ts';
 import type { HostContext } from '../tracking/host.ts';
+import type { MediaGenerationEntrySurface } from '../tracking/tool-fields.ts';
 import path from 'node:path';
 import type { WorkspaceStore } from '../workspace.ts';
 import { AssetLibrary } from './asset-library.ts';
@@ -17,6 +18,7 @@ export async function assetOperation(
   tracking?: OmTracking,
   channel: 'gui' | 'mcp' = 'mcp',
   host?: HostContext,
+  entrySurfaceOverride?: MediaGenerationEntrySurface,
 ) {
   const library = new AssetLibrary(store), gateway = gatewayFor(store, tracking);
   if (args.action === 'list') return library.list(args);
@@ -44,6 +46,7 @@ export async function assetOperation(
       }
     }
     await requireNativeRuntime(pluginRoot, 'media');
+    const entrySurface: MediaGenerationEntrySurface = entrySurfaceOverride ?? (channel === 'gui' ? 'studio' : 'mcp_assets_use');
     const job = await gateway.submit({ modality: args.modality, prompt: args.prompt, model: args.model, mode: args.mode,
       idempotencyKey: args.requestId, parameters: effectiveParameters,
       ...(args.capabilityId ? { capabilityId: args.capabilityId } : {}),
@@ -51,7 +54,7 @@ export async function assetOperation(
       library: { assetId: args.assetId, title: args.name, parentVersionId: args.parentVersionId,
         ...(args.capabilityId ? { capabilityId: args.capabilityId } : {}),
         ...(effectiveOptions ? { capabilityOptions: effectiveOptions } : {}),
-        references: args.references, conversationId: args.conversationId } }, host);
+        references: args.references, conversationId: args.conversationId } }, host, { entrySurface });
     return { job, next: { action: 'status', jobId: job.id } };
   }
   if (args.action === 'jobs') return { jobs: (await gateway.listJobs()).filter(job => (job.library || job.saveToLibrary) && (!args.conversationId || job.library?.conversationId === args.conversationId)).slice(0, 100) };
@@ -60,7 +63,7 @@ export async function assetOperation(
     if (!job.library && !job.saveToLibrary) throw new Error('ASSET_JOB_NOT_FOUND');
     if (['retry_save', 'resume'].includes(args.action) && !args.requestId) throw new Error('A stable requestId is required');
     if (args.action === 'resume') return { job: await gateway.resume(job.id, args.requestId) };
-    return { job: args.action === 'retry_save' ? await gateway.retrySave(job.id) : args.action === 'cancel' ? await gateway.cancel(job.id) : job };
+    return { job: args.action === 'retry_save' ? await gateway.retrySave(job.id) : args.action === 'cancel' ? await gateway.cancel(job.id, { source: channel === 'gui' ? 'studio' : 'mcp' }) : job };
   }
   if (args.action === 'import_to_project') {
     if (!importProject || !args.projectId || !args.requestId) throw new Error('Explicit projectId and requestId are required');

@@ -1061,7 +1061,7 @@ export async function capabilityRun(
         references,
         conversationId: args.conversationId,
       },
-    }, host);
+    }, host, { entrySurface: channel === 'gui' ? 'studio' : 'mcp_capability_run' });
     return {
       capabilityId: cap.id,
       executorKind: cap.executor.kind,
@@ -1178,7 +1178,7 @@ export async function capabilityRun(
       references: args.references,
       conversationId: args.conversationId,
     },
-  }, host);
+  }, host, { entrySurface: channel === 'gui' ? 'studio' : 'mcp_capability_run' });
   return {
     executorKind: 'model' as const,
     selectedModel: job.model.id,
@@ -1206,7 +1206,7 @@ export async function jobManage(store: WorkspaceStore, args: any, tracking?: OmT
     }
     if (args.action === 'resume') return { job: await gateway.resume(job.id, args.requestId) };
     if (args.action === 'retry_save') return { job: await gateway.retrySave(job.id) };
-    if (args.action === 'cancel') return { job: await gateway.cancel(job.id) };
+    if (args.action === 'cancel') return { job: await gateway.cancel(job.id, { source: 'mcp' }) };
     return { job };
   }
   throw new ToolInputError('unsupported job manage action', 'action', 'invalid_enum');

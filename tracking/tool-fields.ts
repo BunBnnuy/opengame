@@ -23,27 +23,195 @@ const actionSets = {
 } as const;
 const targets = ['project', 'templates', 'providers'] as const;
 export const capabilityExecutorKinds = ['model', 'prompt-preset', 'dedicated-model', 'service', 'script'] as const;
+export const mediaModalities = ['image', 'video', 'audio'] as const;
+export const mediaGenerationRouteChannels = ['amr_account', 'amr_opendesign', 'byok_builtin', 'byok_agent', 'byok_custom'] as const;
+export type MediaGenerationRouteChannel = typeof mediaGenerationRouteChannels[number];
+export const mediaGenerationEntrySurfaces = ['studio', 'mcp_media_use', 'mcp_assets_use', 'mcp_capability_run', 'scenario', 'unknown'] as const;
+export type MediaGenerationEntrySurface = typeof mediaGenerationEntrySurfaces[number];
+export const mediaGenerationDestinations = ['library', 'project'] as const;
+export type MediaGenerationDestination = typeof mediaGenerationDestinations[number];
+export const mediaGenerationModes = ['text-to-image', 'text-to-video', 'text-to-audio', 'text-to-speech'] as const;
+export type MediaGenerationMode = typeof mediaGenerationModes[number];
+export const mediaGenerationAudioKinds = ['speech', 'music', 'sfx', 'other'] as const;
+export type MediaGenerationAudioKind = typeof mediaGenerationAudioKinds[number];
+export const mediaGenerationAccountPlans = ['free', 'go', 'plus', 'pro', 'team', 'enterprise', 'unknown'] as const;
+export type MediaGenerationAccountPlan = typeof mediaGenerationAccountPlans[number];
+export const mediaGenerationRejectionCategories = [
+  'commercial_gate', 'auth_credential', 'client_validation', 'provider_unavailable',
+  'reference_invalid', 'project_missing', 'config_changed', 'queue_full', 'other',
+] as const;
+export type MediaGenerationRejectionCategory = typeof mediaGenerationRejectionCategories[number];
+export const mediaGenerationRejectionReasons = [
+  'INVALID_PROMPT', 'INVALID_PARAMETERS', 'INVALID_MODE', 'INVALID_DESTINATION', 'INVALID_USAGE',
+  'INVALID_IDEMPOTENCY_KEY', 'IDEMPOTENCY_CONFLICT', 'PROJECT_NOT_FOUND', 'PROJECT_NOT_OPEN',
+  'ACCOUNT_SIGNED_OUT', 'ACCOUNT_NOT_ENTITLED', 'KEY_REJECTED', 'PROVIDER_NOT_CONFIGURED', 'MODEL_UNAVAILABLE',
+  'CONFIG_CHANGED', 'OPTIONS_INVALID', 'REFERENCE_UNSUPPORTED', 'REFERENCE_LIMIT_EXCEEDED',
+  'REFERENCE_TOO_LARGE', 'REFERENCE_INVALID_FORMAT', 'REFERENCE_UNREADABLE', 'REFERENCE_CONFLICT',
+  'LIBRARY_INVALID', 'QUEUE_FULL', 'PREFLIGHT_FAILED',
+] as const;
+export type MediaGenerationRejectionReason = typeof mediaGenerationRejectionReasons[number];
+export const mediaGenerationFailurePhases = [
+  'precheck', 'uploading', 'submitting', 'generating', 'polling', 'remote_task',
+  'downloading', 'decoding', 'saving', 'save_unavailable', 'interrupted', 'cancelled',
+] as const;
+export type MediaGenerationFailurePhase = typeof mediaGenerationFailurePhases[number];
+export const mediaGenerationCancelPhases = [
+  'queued', 'starting', 'uploading', 'submitting', 'submitted', 'provider_queue',
+  'generating', 'reconnecting', 'downloading', 'saving', 'resuming', 'unknown',
+] as const;
+export type MediaGenerationCancelPhase = typeof mediaGenerationCancelPhases[number];
+export const mediaGenerationCancelSources = ['studio', 'mcp', 'unknown'] as const;
+export type MediaGenerationCancelSource = typeof mediaGenerationCancelSources[number];
+export const mediaGenerationUpstreamErrorCodes = [
+  'unauthorized', 'invalid_request', 'tier_model_not_entitled', 'tier_request_kind_not_entitled',
+  'model_access_denied', 'insufficient_balance', 'tier_limit_exceeded', 'provider_error',
+  'request_state_unknown', 'media_execution_unknown', 'asset_too_large', 'unsupported_media_type',
+  'content_policy_violation', 'safety_blocked', 'rate_limit_exceeded', 'timeout',
+  'cancelled', 'internal_error', 'service_unavailable', 'other',
+] as const;
+export type MediaGenerationUpstreamErrorCode = typeof mediaGenerationUpstreamErrorCodes[number];
 export const mediaGenerationErrorCodes = [
-  'AUTH_REJECTED', 'BALANCE_LOW', 'RATE_LIMITED', 'PROVIDER_UNAVAILABLE', 'CONFIG_CHANGED',
+  'AUTH_REJECTED', 'PLAN_NOT_ENTITLED', 'BALANCE_LOW', 'RATE_LIMITED', 'INVALID_REQUEST',
+  'UPSTREAM_5XX', 'NETWORK_ERROR', 'UPLOAD_FAILED', 'EMPTY_OUTPUT',
+  'PROVIDER_UNAVAILABLE', 'CONFIG_CHANGED',
   'TIMEOUT', 'WORKER_INTERRUPTED', 'DOWNLOAD_FAILED', 'INVALID_MEDIA', 'SAVE_FAILED',
   'SAVE_UNAVAILABLE', 'REMOTE_FAILED', 'CANCELLED', 'PROVIDER_ERROR',
 ] as const;
+export type MediaGenerationErrorCode = typeof mediaGenerationErrorCodes[number];
+export const mediaGenerationErrorCategories = [
+  'commercial_gate', 'byok_billing', 'auth_credential', 'rate_limit', 'client_validation',
+  'timeout', 'provider_unavailable', 'upstream_error', 'network_download', 'media_invalid',
+  'local_storage', 'client_interrupted', 'user_cancelled',
+] as const;
+export type MediaGenerationErrorCategory = typeof mediaGenerationErrorCategories[number];
+export const mediaGenerationAspectRatios = [
+  '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9', '4:5', '5:4', 'auto', 'other',
+] as const;
+export type MediaGenerationAspectRatio = typeof mediaGenerationAspectRatios[number];
+export const mediaGenerationResolutions = [
+  '480p', '540p', '720p', '1080p', '1k', '2k', '4k', 'auto', 'other',
+] as const;
+export type MediaGenerationResolution = typeof mediaGenerationResolutions[number];
 export const superAgentErrorCodes = [
   'ABORTED', 'INTERRUPTED', 'TIMEOUT', 'AUTH_ERROR', 'RATE_LIMITED', 'RUNTIME_UNAVAILABLE', 'TURN_FAILED',
 ] as const;
 
-const capabilitySlug = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/;
+export const approvedCapabilityIds = [
+  'text-to-image', 'image-edit', 'remove-background', 'image-blend', 'relight',
+  'character', 'shot-image', 'inpainting', 'expand-image', 'upscale-4k',
+  'batch-set', 'image-layers', 'text-to-video', 'image-to-video', 'camera-control',
+  'multi-shot', 'native-audio', 'start-end-frames', 'omni-reference', 'video-edit',
+  'video-extend', 'video-upscale-4k', 'motion-control', 'lipsync', 'music',
+  'sound-effects', 'speech', 'asr-transcribe', 'voice-clone', 'voice-changer',
+  'dubbing', 'stems', 'digital-human', '3d-asset', '3d-world',
+] as const;
+const approvedCapabilityIdSet: ReadonlySet<string> = new Set(approvedCapabilityIds);
 export function safeCapabilityId(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  return capabilitySlug.test(trimmed) ? trimmed : 'other';
+  return approvedCapabilityIdSet.has(trimmed) ? trimmed : 'other';
+}
+
+export function normalizeAccountPlan(plan: unknown): MediaGenerationAccountPlan | undefined {
+  if (typeof plan !== 'string') return undefined;
+  const normalized = plan.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return (mediaGenerationAccountPlans as readonly string[]).includes(normalized)
+    ? normalized as MediaGenerationAccountPlan
+    : 'unknown';
+}
+
+export function normalizeCancelPhase(phase: unknown): MediaGenerationCancelPhase {
+  if (typeof phase !== 'string') return 'unknown';
+  const normalized = phase === 'provider-queue' ? 'provider_queue' : phase;
+  return (mediaGenerationCancelPhases as readonly string[]).includes(normalized)
+    ? normalized as MediaGenerationCancelPhase
+    : 'unknown';
+}
+
+export function normalizeAspectRatio(raw: unknown): MediaGenerationAspectRatio | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return (mediaGenerationAspectRatios as readonly string[]).includes(normalized)
+    ? normalized as MediaGenerationAspectRatio
+    : 'other';
+}
+
+export function normalizeResolution(raw: unknown): MediaGenerationResolution | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return (mediaGenerationResolutions as readonly string[]).includes(normalized)
+    ? normalized as MediaGenerationResolution
+    : 'other';
+}
+
+export function extractRequestedMediaParams(parameters?: Record<string, unknown>) {
+  if (!parameters || typeof parameters !== 'object') return {};
+  const output = parameters.output && typeof parameters.output === 'object' && !Array.isArray(parameters.output)
+    ? parameters.output as Record<string, unknown>
+    : undefined;
+  const rawDuration = parameters.duration ?? parameters.duration_seconds;
+  const parsedDuration = typeof rawDuration === 'number'
+    ? rawDuration
+    : typeof rawDuration === 'string' && /^\d+(?:\.\d+)?s?$/i.test(rawDuration.trim())
+      ? Number(rawDuration.trim().replace(/s$/i, ''))
+      : undefined;
+  const requested_duration_sec = parsedDuration !== undefined && Number.isFinite(parsedDuration) && parsedDuration >= 0 && parsedDuration <= 600
+    ? Math.round(parsedDuration)
+    : undefined;
+  const requested_aspect_ratio = normalizeAspectRatio(parameters.aspect_ratio ?? parameters.ratio ?? output?.aspect_ratio);
+  const requested_resolution = normalizeResolution(parameters.resolution ?? output?.resolution);
+  const requested_audio = typeof parameters.generate_audio === 'boolean' ? parameters.generate_audio : undefined;
+  return {
+    ...(requested_duration_sec !== undefined ? { requested_duration_sec } : {}),
+    ...(requested_aspect_ratio ? { requested_aspect_ratio } : {}),
+    ...(requested_resolution ? { requested_resolution } : {}),
+    ...(requested_audio !== undefined ? { requested_audio } : {}),
+  };
+}
+
+export function extractHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const raw = (error as { status?: unknown }).status;
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 100 && raw <= 599 ? raw : undefined;
+}
+
+export function extractErrorSource(error: unknown): 'api' | 'storage' | 'download' | 'local' | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const raw = (error as { errorSource?: unknown }).errorSource;
+  return raw === 'api' || raw === 'storage' || raw === 'download' || raw === 'local' ? raw : undefined;
+}
+
+const upstreamErrorCodeSet: ReadonlySet<string> = new Set(mediaGenerationUpstreamErrorCodes);
+export function normalizeUpstreamErrorCode(raw: unknown): MediaGenerationUpstreamErrorCode | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return upstreamErrorCodeSet.has(normalized) ? normalized as MediaGenerationUpstreamErrorCode : 'other';
+}
+
+export function extractUpstreamErrorCode(error: unknown): MediaGenerationUpstreamErrorCode | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const record = error as { upstreamCode?: unknown };
+  // Only read explicit upstreamCode attached by gateway/account error parsers; never read Node/undici errno strings.
+  return normalizeUpstreamErrorCode(record.upstreamCode);
+}
+
+export function isEntitlementUpstreamCode(code: string | undefined): boolean {
+  return code === 'tier_model_not_entitled'
+    || code === 'tier_request_kind_not_entitled'
+    || code === 'model_access_denied'
+    || code === 'insufficient_balance';
 }
 
 export const toolDimensions = {
   template_id: 'code', copy_attempt_id: 'uuid', template_entry: templateEntries,
   action: [...new Set(Object.values(actionSets).flat())],
   target: targets,
+  modality: mediaModalities,
   capability_id: 'code',
   dry_run: 'boolean',
   executor_kind: capabilityExecutorKinds,
@@ -52,7 +220,7 @@ export const toolDimensions = {
 
 export function toolInputFields(tool: string, input: unknown) {
   const args = input && typeof input === 'object' && !Array.isArray(input)
-    ? input as { action?: unknown; target?: unknown; capabilityId?: unknown; dryRun?: unknown; model?: unknown; templateId?: unknown; copyAttemptId?: unknown; templateEntry?: unknown }
+    ? input as { action?: unknown; target?: unknown; modality?: unknown; capabilityId?: unknown; dryRun?: unknown; model?: unknown; templateId?: unknown; copyAttemptId?: unknown; templateEntry?: unknown }
     : {};
   const actions: readonly typeof toolDimensions.action[number][] = Object.hasOwn(actionSets, tool) ? actionSets[tool as keyof typeof actionSets] : [];
   const defaultAction =
@@ -66,6 +234,13 @@ export function toolInputFields(tool: string, input: unknown) {
   const action = actions.find(value => value === (args.action === undefined ? defaultAction : args.action));
   const target = tool === 'openmotion_open_preview'
     ? targets.find(value => value === (args.target === undefined ? 'project' : args.target)) : undefined;
+  const supportsModality = tool === 'openmotion_media_use'
+    || tool === 'openmotion_assets_use'
+    || tool === 'openmotion_assets'
+    || tool === 'openmotion_capability_run'
+    || tool === 'openmotion_capability_discover'
+    || tool === 'openmotion_open_preview';
+  const modality = supportsModality ? mediaModalities.find(value => value === args.modality) : undefined;
   const supportsCapability = tool === 'openmotion_capability_run'
     || tool === 'openmotion_capability_discover'
     || tool === 'openmotion_assets_use';
@@ -82,6 +257,7 @@ export function toolInputFields(tool: string, input: unknown) {
     ...(templateEntry ? { template_entry: templateEntry } : {}),
     ...(action ? { action } : {}),
     ...(target ? { target } : {}),
+    ...(modality ? { modality } : {}),
     ...(capability_id ? { capability_id } : {}),
     ...(dry_run !== undefined ? { dry_run } : {}),
     ...(fallback_raw_model !== undefined ? { fallback_raw_model } : {}),
@@ -89,13 +265,24 @@ export function toolInputFields(tool: string, input: unknown) {
 }
 
 export function toolResultFields(tool: string, input: unknown, result: unknown) {
-  if (tool !== 'openmotion_capability_run' && tool !== 'openmotion_capability_discover') return {};
   const args = input && typeof input === 'object' && !Array.isArray(input)
-    ? input as { capabilityId?: unknown; model?: unknown }
+    ? input as { capabilityId?: unknown; model?: unknown; modality?: unknown }
     : {};
   const value = result && typeof result === 'object' && !Array.isArray(result)
-    ? result as { capabilityId?: unknown; executorKind?: unknown; dryRun?: unknown }
+    ? result as { capabilityId?: unknown; executorKind?: unknown; dryRun?: unknown; modality?: unknown; job?: { modality?: unknown } }
     : {};
+  const supportsModality = tool === 'openmotion_media_use'
+    || tool === 'openmotion_assets_use'
+    || tool === 'openmotion_assets'
+    || tool === 'openmotion_capability_run'
+    || tool === 'openmotion_capability_discover'
+    || tool === 'openmotion_job_manage';
+  const modality = supportsModality
+    ? mediaModalities.find(m => m === (value.modality ?? value.job?.modality ?? args.modality))
+    : undefined;
+  if (tool !== 'openmotion_capability_run' && tool !== 'openmotion_capability_discover') {
+    return modality ? { modality } : {};
+  }
   const capability_id = safeCapabilityId(value.capabilityId ?? args.capabilityId);
   const executor_kind = capabilityExecutorKinds.find(kind => kind === value.executorKind);
   const dry_run = typeof value.dryRun === 'boolean' ? value.dryRun : undefined;
@@ -103,6 +290,7 @@ export function toolResultFields(tool: string, input: unknown, result: unknown) 
     ? (!capability_id && typeof args.model === 'string' && args.model.trim().length > 0)
     : undefined;
   return {
+    ...(modality ? { modality } : {}),
     ...(capability_id ? { capability_id } : {}),
     ...(executor_kind ? { executor_kind } : {}),
     ...(dry_run !== undefined ? { dry_run } : {}),
@@ -110,30 +298,71 @@ export function toolResultFields(tool: string, input: unknown, result: unknown) 
   };
 }
 
-export function mediaGenerationError(error: unknown, phase?: string): typeof mediaGenerationErrorCodes[number] {
+export function mediaGenerationError(error: unknown, phase?: string): MediaGenerationErrorCode {
   if (phase === 'cancelled') return 'CANCELLED';
   if (phase === 'interrupted') return 'WORKER_INTERRUPTED';
   if (phase === 'save_unavailable') return 'SAVE_UNAVAILABLE';
-  if (phase === 'save_failed') return 'SAVE_FAILED';
-  const status = error && typeof error === 'object' && 'status' in error && typeof (error as { status?: unknown }).status === 'number'
-    ? (error as { status: number }).status : undefined;
-  if (status === 401 || status === 403) return 'AUTH_REJECTED';
-  if (status === 402) return 'BALANCE_LOW';
-  if (status === 429) return 'RATE_LIMITED';
+  const status = extractHttpStatus(error);
+  const upstreamCode = extractUpstreamErrorCode(error);
+  const source = extractErrorSource(error);
   const text = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   const lower = text.toLowerCase();
   if (lower.startsWith('save_not_available:')) return 'SAVE_UNAVAILABLE';
-  if (lower.includes('timed out') || lower.includes('timeout')) return 'TIMEOUT';
+  // Timeouts (local deadline or remote timeout) take precedence over generic phase buckets.
+  if (upstreamCode === 'timeout' || lower.includes('timed out') || lower.includes('timeout')) return 'TIMEOUT';
+  if (phase === 'uploading' && (source === 'storage' || lower.includes('reference upload storage'))) return 'UPLOAD_FAILED';
+  if (phase === 'downloading' || source === 'download') {
+    if (status === 401 && upstreamCode === 'unauthorized') return 'AUTH_REJECTED';
+    return 'DOWNLOAD_FAILED';
+  }
+  if (phase === 'save_failed' || phase === 'saving') return 'SAVE_FAILED';
+  if (phase === 'decoding') {
+    if (lower.includes('returned no media') || lower.includes('returned no images') || lower.includes('without media output')) return 'EMPTY_OUTPUT';
+    return 'INVALID_MEDIA';
+  }
+  if (upstreamCode === 'insufficient_balance' || status === 402) return 'BALANCE_LOW';
+  if (upstreamCode === 'tier_model_not_entitled' || upstreamCode === 'tier_request_kind_not_entitled' || upstreamCode === 'model_access_denied') return 'PLAN_NOT_ENTITLED';
+  if (upstreamCode === 'tier_limit_exceeded' || upstreamCode === 'rate_limit_exceeded' || status === 429) return 'RATE_LIMITED';
+  if (upstreamCode === 'unauthorized' || status === 401 || status === 403) return 'AUTH_REJECTED';
+  if (upstreamCode === 'invalid_request' || upstreamCode === 'asset_too_large' || upstreamCode === 'unsupported_media_type' || status === 400 || status === 413 || status === 422) return 'INVALID_REQUEST';
+  if (status !== undefined && status >= 500 && status <= 599) return 'UPSTREAM_5XX';
+  if (phase === 'remote_task') return 'REMOTE_FAILED';
+  if (lower.includes('plan does not include') || lower.includes('upgrade your plan')) return 'PLAN_NOT_ENTITLED';
   if (lower.includes('balance') || lower.includes('credit') || lower.includes('insufficient') || lower.includes('quota') || lower.includes('entitlement')) return 'BALANCE_LOW';
-  if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key') || lower.includes('credentials') || lower.includes('personal engine key')) return 'AUTH_REJECTED';
-  if (lower.includes('429') || lower.includes('rate limit')) return 'RATE_LIMITED';
-  if (lower.includes('configuration changed') || lower.includes('origin changed')) return 'CONFIG_CHANGED';
+  if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key') || lower.includes('credentials') || lower.includes('personal engine key') || lower.includes('sign-in is no longer accepted') || lower.includes('sign-in was rejected')) return 'AUTH_REJECTED';
+  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('concurrency limit')) return 'RATE_LIMITED';
+  if (lower.includes('configuration changed') || lower.includes('origin changed') || lower.includes('account changed')) return 'CONFIG_CHANGED';
   if (lower.includes('no longer available') || lower.includes('unavailable')) return 'PROVIDER_UNAVAILABLE';
   if (lower.includes('worker stopped') || lower.includes('interrupted')) return 'WORKER_INTERRUPTED';
-  if (lower.includes('unsupported media') || lower.includes('could not be decoded') || lower.includes('returned no media')) return 'INVALID_MEDIA';
-  if (lower.includes('download') || lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('enotfound')) return 'DOWNLOAD_FAILED';
-  if (lower.includes('task failed') || lower.includes('remote')) return 'REMOTE_FAILED';
+  if (lower.includes('returned no media') || lower.includes('returned no images') || lower.includes('without media output')) return 'EMPTY_OUTPUT';
+  if (lower.includes('unsupported media') || lower.includes('could not be decoded') || lower.includes('did not return valid')) return 'INVALID_MEDIA';
+  if (lower.includes('download')) return 'DOWNLOAD_FAILED';
+  if (lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('enotfound') || lower.includes('econnrefused') || lower.includes('socket hang up') || lower.includes('public dns') || lower.includes('check your connection')) return 'NETWORK_ERROR';
+  if (lower.includes('task failed') || lower.includes('remote') || lower.includes('generation failed') || lower.includes('generation cancelled') || lower.includes('generation canceled')) return 'REMOTE_FAILED';
   return 'PROVIDER_ERROR';
+}
+
+export function mediaGenerationErrorCategory(
+  errorCode: MediaGenerationErrorCode,
+  failurePhase?: MediaGenerationFailurePhase,
+  routeChannel?: MediaGenerationRouteChannel,
+): MediaGenerationErrorCategory {
+  if (errorCode === 'CANCELLED' || failurePhase === 'cancelled') return 'user_cancelled';
+  if (errorCode === 'WORKER_INTERRUPTED' || failurePhase === 'interrupted') return 'client_interrupted';
+  if (errorCode === 'TIMEOUT') return 'timeout';
+  if (errorCode === 'BALANCE_LOW' || errorCode === 'PLAN_NOT_ENTITLED') {
+    return routeChannel === undefined || routeChannel === 'amr_account' || routeChannel === 'amr_opendesign'
+      ? 'commercial_gate'
+      : 'byok_billing';
+  }
+  if (errorCode === 'AUTH_REJECTED') return 'auth_credential';
+  if (errorCode === 'RATE_LIMITED') return 'rate_limit';
+  if (errorCode === 'INVALID_REQUEST' || errorCode === 'CONFIG_CHANGED') return 'client_validation';
+  if (errorCode === 'PROVIDER_UNAVAILABLE') return 'provider_unavailable';
+  if (errorCode === 'UPLOAD_FAILED' || errorCode === 'DOWNLOAD_FAILED' || errorCode === 'NETWORK_ERROR' || failurePhase === 'downloading') return 'network_download';
+  if (errorCode === 'INVALID_MEDIA') return 'media_invalid';
+  if (errorCode === 'SAVE_FAILED' || errorCode === 'SAVE_UNAVAILABLE' || failurePhase === 'saving' || failurePhase === 'save_unavailable') return 'local_storage';
+  return 'upstream_error';
 }
 
 export function superAgentError(error: unknown, cancelled = false): typeof superAgentErrorCodes[number] {
