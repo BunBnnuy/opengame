@@ -305,6 +305,7 @@ function artifactToResourceAttachment(artifact: SuperAgentArtifact): SuperAgentR
 export function SuperAgentWorkspace({
   active,
   chatId,
+  homeVisit,
   requestedMode = null,
   requestedDesignModule = null,
   requestedGameId = null,
@@ -324,6 +325,7 @@ export function SuperAgentWorkspace({
 }: {
   active: boolean;
   chatId: string | null;
+  homeVisit?: number;
   requestedMode?: SuperAgentCreationModeId | null;
   requestedDesignModule?: SuperAgentDesignModuleId | null;
   requestedGameId?: string | null;
@@ -420,6 +422,13 @@ export function SuperAgentWorkspace({
   const [sidebarOpen, setSidebarOpen] = useState(!narrow);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerExpanded, setViewerExpanded] = useState(false);
+  const previousHomeVisit = useRef(homeVisit);
+  useEffect(() => {
+    if (previousHomeVisit.current === homeVisit) return;
+    previousHomeVisit.current = homeVisit;
+    setViewerOpen(false);
+    setViewerExpanded(false);
+  }, [homeVisit]);
   const viewerPaneId = useId();
   const [viewerWidth, setViewerWidth] = useState<number | null>(null);
   const [viewerHeight, setViewerHeight] = useState<number | null>(null);
@@ -2186,6 +2195,7 @@ export function SuperAgentWorkspace({
           <ConversationStream
             active={active}
             chat={presentedChat}
+            homeVisit={homeVisit}
             conversations={conversations}
             activeArtifacts={viewerArtifacts}
             requestedMode={requestedMode}
