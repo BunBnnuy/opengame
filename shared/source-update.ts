@@ -1390,10 +1390,10 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     }).catch(() => [] as string[]);
 
     let restarted = false;
-    let restartDeferred = false;
+    let restartDeferred = !restartBackend;
     if (restartBackend) {
       const shutdown = options.shutdownBackend ?? defaultShutdownIdleBackend;
-      const outcome = await shutdown(options.dataDirectory).catch(() => ({ restarted: false, deferred: false }));
+      const outcome = await shutdown(options.dataDirectory).catch(() => ({ restarted: false, deferred: true }));
       restarted = outcome.restarted;
       restartDeferred = outcome.deferred;
     }

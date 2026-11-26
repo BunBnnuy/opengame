@@ -235,6 +235,9 @@ async function invokeRpc(message: any, store: WorkspaceStore, registry: ReturnTy
           if (updateRunner) {
             const updateOutcome = await updateRunner({ repoRoot: runtimeRoot, dataDirectory: store.directory, restartBackend }).catch(() => undefined);
             runtimeUpdate = compactRuntimeUpdateNotice(updateOutcome);
+            if (runtimeUpdate && options?.transport === 'http' && !runtimeUpdate.restarted) {
+              runtimeUpdate = { ...runtimeUpdate, restartDeferred: true };
+            }
           }
         }
         let raw: any;

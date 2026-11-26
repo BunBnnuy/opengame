@@ -783,6 +783,44 @@ test('MCP rpc triggers autoUpdate across all creation/generation tools, skips re
   assert.equal(resilientResp.result.structuredContent.id, 'item-123');
 });
 
+test('HTTP MCP creation update reports restartDeferred: true when backend restart is skipped', async t => {
+  const { upstreamWork, checkout, dataDir, fakeHome } = await createGitFixtures(t);
+  await writeFile(path.join(upstreamWork, 'README.md'), '# upstream http mcp update\n');
+  await runGit(upstreamWork, ['add', 'README.md']);
+  await runGit(upstreamWork, ['commit', '-m', 'http mcp update']);
+  await runGit(upstreamWork, ['push', 'origin', 'main']);
+
+  const store = new WorkspaceStore(dataDir);
+  let seenRestartBackend: boolean | undefined;
+  const resp: any = await rpc(
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'openmotion_game_create', arguments: { prompt: 'HTTP runner' } } },
+    store,
+    undefined,
+    undefined,
+    undefined,
+    {
+      transport: 'http',
+      callPhase1: async () => ({ id: 'game-http-1', title: 'HTTP runner', status: 'draft' }),
+      autoUpdate: async ctx => {
+        seenRestartBackend = ctx.restartBackend;
+        return maybeAutoUpdateBeforeCreation({
+          repoRoot: checkout,
+          dataDirectory: ctx.dataDirectory,
+          homeDirectory: fakeHome,
+          restartBackend: ctx.restartBackend,
+          env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+        });
+      },
+    },
+  );
+
+  assert.equal(seenRestartBackend, false);
+  assert.equal(resp.result.structuredContent.id, 'game-http-1');
+  assert.equal(resp.result.structuredContent.runtimeUpdate?.status, 'updated');
+  assert.equal(resp.result.structuredContent.runtimeUpdate?.restarted, false);
+  assert.equal(resp.result.structuredContent.runtimeUpdate?.restartDeferred, true);
+});
+
 test('HTTP /motion-api/update/status and /motion-api/update/apply reject cross-site requests and report non-git checkout cleanly', async t => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'om-http-update-')));
   t.after(() => rm(root, { recursive: true, force: true }));
