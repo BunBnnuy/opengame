@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { startServer } from '../server.ts';
+import { gameProjectsFor } from '../game-projects.ts';
 import { MCP_HTTP_PATH, MCP_STATUS_API, MCP_TOKENS_API } from '../shared/mcp-http.ts';
 import { fixture } from './fixtures.ts';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
@@ -291,12 +292,16 @@ test('strict MCP 2026-07-28 HTTP clients discover, read and call without a sessi
     assert.ok(!plain.some((tool: { name: string }) => tool.name === 'openmotion_show_template_recommendations'));
     const workflow = await request('resources/read', { uri: 'openmotion://workflow/game/start' });
     assert.ok((await workflow.json()).result.contents[0].text.includes('openmotion_game'));
-    const response = await request('tools/call', { name: 'openmotion_game_get', arguments: { id: 'stack-the-moon' } });
+    const { game } = await gameProjectsFor(store.directory).create({
+      prompt: 'Preview link integration game', multiplayer: false, genre: 'casual', style: 'minimal', setting: 'modern',
+    });
+    const response = await request('tools/call', { name: 'openmotion_game_get', arguments: { id: game.id } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('mcp-session-id'), null);
     const { result } = await response.json();
     assert.equal(result.resultType, 'complete');
-    assert.equal(result.structuredContent.playUrl, origin + '/api/games/stack-the-moon/play/index.html');
+    assert.notEqual(result.isError, true, JSON.stringify(result.structuredContent));
+    assert.equal(result.structuredContent.playUrl, `${origin}/api/games/${game.id}/play/index.html`);
     assert.equal((await fetch(result.structuredContent.playUrl)).status, 200);
     const denied = await request('tools/call', { name: 'openmotion_game_create', arguments: { prompt: 'Read scope must deny this' } });
     assert.equal((await denied.json()).error.code, -32003);

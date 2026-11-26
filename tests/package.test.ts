@@ -183,6 +183,9 @@ test('standalone MCP SDK accepts stateless requests without node_modules', async
     for (const { name, data } of await packageModernMcpSdk()) {
       await writeFile(path.join(extracted, name), data);
     }
+    const notices = await readFile(path.join(extracted, 'shared/mcp-modern-sdk.LICENSE.txt'), 'utf8');
+    assert.match(notices, /^@modelcontextprotocol\/core@2\.4\.0$/m);
+    assert.doesNotMatch(notices, /^@modelcontextprotocol\/core@2\.0\.0$/m);
     await copyFile(new URL('../shared/mcp-modern.ts', import.meta.url), path.join(extracted, 'shared/mcp-modern.ts'));
     const script = `
       const { loadModernMcpSdk } = await import('./shared/mcp-modern.ts');

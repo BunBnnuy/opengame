@@ -1,5 +1,5 @@
 import { isMain } from '../shared/entry.ts';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -10,12 +10,22 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 // Standalone ZIPs need the MCP transport and its license notices before npm setup.
 export async function packageModernMcpSdk() {
   const { build } = await import('esbuild');
-  const { outputFiles: [sdk] } = await build({
-    entryPoints: [path.join(root, 'shared/mcp-modern-sdk.ts')],
-    bundle: true, platform: 'node', format: 'cjs', target: 'node26', minify: true, write: false,
+  const { outputFiles: [sdk], metafile } = await build({
+    absWorkingDir: root,
+    entryPoints: ['shared/mcp-modern-sdk.ts'],
+    bundle: true, platform: 'node', format: 'cjs', target: 'node26', minify: true, write: false, metafile: true,
   });
-  const licenses = await Promise.all(['@modelcontextprotocol/server', '@modelcontextprotocol/core', 'zod'].map(async name =>
-    name + '\n' + await readFile(path.join(root, 'node_modules', name, 'LICENSE'), 'utf8')));
+  const inputs = Object.values(metafile.outputs).flatMap(output =>
+    Object.keys(output.inputs).filter(file => output.inputs[file].bytesInOutput > 0));
+  const packageDirs = new Set(inputs.flatMap(file =>
+    file.match(/^((?:.*\/)?node_modules\/(?:@[^/]+\/)?[^/]+)\//)?.[1] ?? []));
+  const licenses = await Promise.all([...packageDirs].sort().map(async directory => {
+    const packageRoot = path.join(root, directory);
+    const { name, version } = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+    const notices = (await readdir(packageRoot)).filter(file => /^NOTICE(?:\.\w+)?$/i.test(file)).sort();
+    const texts = await Promise.all(['LICENSE', ...notices].map(file => readFile(path.join(packageRoot, file), 'utf8')));
+    return [`${name}@${version}`, ...texts].join('\n');
+  }));
   return [
     { name: 'shared/mcp-modern-sdk.cjs', data: Buffer.from(sdk.contents) },
     { name: 'shared/mcp-modern-sdk.LICENSE.txt', data: Buffer.from(licenses.join('\n\n')) },

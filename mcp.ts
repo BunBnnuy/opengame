@@ -32,6 +32,7 @@ import type { McpClientState } from './shared/mcp-template-recommendations.ts';
 import { gameToolAnnotations } from './shared/game-tools.ts';
 import { hasMcpEnvelope, loadModernMcpSdk, type ModernMcpSdk } from './shared/mcp-modern.ts';
 import { resolvePublicOrigin } from './gateway/agent-runtimes.ts';
+import { compactRuntimeUpdateNotice, maybeAutoUpdateBeforeCreation, shouldAutoUpdateForToolCall, type RuntimeUpdateNotice, type SourceUpdateApplyResult, type SourceUpdateCheckResult } from './shared/source-update.ts';
 
 export function mcpRegistry(profile = releaseProfile) { return createToolRegistry(profile === 'phase1' ? phase1Tools : tools, profile); }
 export const releaseRegistry = mcpRegistry();
@@ -66,6 +67,7 @@ export type McpRpcOptions = {
   stateless?: boolean;
   authorizeToolCall?: (tool: { name: string; annotations?: { readOnlyHint?: boolean } }, args: unknown) => void;
   callPhase1?: (payload: { name: string; arguments: any; trackingHost: HostContext; trackingContext?: string }) => Promise<any>;
+  autoUpdate?: (context: { repoRoot: string; dataDirectory: string; restartBackend: boolean }) => Promise<SourceUpdateCheckResult | SourceUpdateApplyResult>;
 };
 
 export async function rpc(message: any, store = new WorkspaceStore(), registry = releaseRegistry, connection?: { selection: Selection }, clientState?: McpClientState, options?: McpRpcOptions) {
@@ -267,6 +269,18 @@ async function invokeRpc(message: any, store: WorkspaceStore, registry: ReturnTy
         }
         const transportName = finalVideo ? 'openmotion_get_project' : name;
         const transportArgs = finalVideo ? { projectId: args.projectId, workId: args.workId, includeVideo: true } : args;
+        let runtimeUpdate: RuntimeUpdateNotice | undefined;
+        if (shouldAutoUpdateForToolCall(transportName, transportArgs)) {
+          const restartBackend = !options?.callPhase1 && options?.transport !== 'http';
+          const updateRunner = options?.autoUpdate ?? (!options?.callPhase1 || options?.transport === 'http' ? maybeAutoUpdateBeforeCreation : undefined);
+          if (updateRunner) {
+            const updateOutcome = await updateRunner({ repoRoot: runtimeRoot, dataDirectory: store.directory, restartBackend }).catch(() => undefined);
+            runtimeUpdate = compactRuntimeUpdateNotice(updateOutcome);
+            if (runtimeUpdate && options?.transport === 'http' && !runtimeUpdate.restarted) {
+              runtimeUpdate = { ...runtimeUpdate, restartDeferred: true };
+            }
+          }
+        }
         let raw: any;
         let responseOk = true;
         let previewOrigin = options?.previewOrigin;
@@ -299,8 +313,9 @@ async function invokeRpc(message: any, store: WorkspaceStore, registry: ReturnTy
           return result({ content: [{ type: 'text', text: JSON.stringify(presentation) }], structuredContent: presentation,
             _meta: { ui: { resourceUri: inlineVideoUri } } });
         }
+        const output = runtimeUpdate ? { ...visible, runtimeUpdate } : visible;
         const _inlineMedia = normalized?._meta?.inlineVideo ?? legacyMedia;
-        return result({ content: [{ type: 'text', text: JSON.stringify(visible) }], structuredContent: visible,
+        return result({ content: [{ type: 'text', text: JSON.stringify(output) }], structuredContent: output,
           ...(_inlineMedia ? { _meta: { inlineVideo: _inlineMedia } } : {}) });
       }
       let value;
