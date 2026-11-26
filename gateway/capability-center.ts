@@ -32,7 +32,7 @@ import {
   type CapabilityScriptOutput,
 } from './capability-scripts.ts';
 import { mediaUse } from './media-use.ts';
-import { discoverOpenDesign3d, discoverOpenDesignWorld, type OpenDesign3dDiscovery } from './opendesign-3d.ts';
+import { discoverOpenDesign3d, discoverOpenDesignSpatial, discoverOpenDesignWorld, type OpenDesign3dDiscovery } from './opendesign-3d.ts';
 import { gatewayFor } from './service.ts';
 import { transcriptOperation } from './transcript-operations.ts';
 import { transcriptsFor } from './transcription.ts';
@@ -267,10 +267,7 @@ export async function capabilityDiscover(
   }
   if (args.action === 'models') {
     if (args.modality === '3d') {
-      const [live3d, liveWorld] = await Promise.all([
-        discoverOpenDesign3d(store, args.refresh === true),
-        discoverOpenDesignWorld(store, args.refresh === true),
-      ]);
+      const { live3d, liveWorld } = await discoverOpenDesignSpatial(store, args.refresh === true);
       const byProvider = new Map<string, any[]>();
       if (live3d.available && live3d.provider) {
         byProvider.set(live3d.provider, [
@@ -339,12 +336,30 @@ export async function capabilityDiscover(
   }
   const catalog = await loadCapabilityCatalog(store);
   const gateway = gatewayFor(store, tracking);
-  const [status, models, asrCatalog, live3d, liveWorld] = await Promise.all([
+  const emptySpatial: OpenDesign3dDiscovery = { available: false, models: [] };
+  const targetCap = (args.action === 'describe' || args.action === 'quote') && typeof args.capabilityId === 'string'
+    ? findCapability(args.capabilityId, catalog)
+    : undefined;
+  const needs3d = targetCap
+    ? targetCap.executor.kind === 'script' && targetCap.executor.scriptId === 'opendesign-3d'
+    : !args.modality || args.modality === '3d';
+  const needsWorld = targetCap
+    ? targetCap.executor.kind === 'script' && targetCap.executor.scriptId === 'opendesign-world'
+    : !args.modality || args.modality === '3d';
+
+  const spatialPromise: Promise<{ live3d: OpenDesign3dDiscovery; liveWorld: OpenDesign3dDiscovery }> = needs3d && needsWorld
+    ? discoverOpenDesignSpatial(store, args.refresh === true).catch(() => ({ live3d: emptySpatial, liveWorld: emptySpatial }))
+    : needs3d
+      ? discoverOpenDesign3d(store, args.refresh === true).catch(() => emptySpatial).then(live3d => ({ live3d, liveWorld: emptySpatial }))
+      : needsWorld
+        ? discoverOpenDesignWorld(store, args.refresh === true).catch(() => emptySpatial).then(liveWorld => ({ live3d: emptySpatial, liveWorld }))
+        : Promise.resolve({ live3d: emptySpatial, liveWorld: emptySpatial });
+
+  const [status, models, asrCatalog, { live3d, liveWorld }] = await Promise.all([
     gateway.status(),
     gateway.models(),
     transcriptsFor(store).models().catch(() => ({ models: [] as unknown[] })),
-    discoverOpenDesign3d(store, args.refresh === true).catch((): OpenDesign3dDiscovery => ({ available: false, models: [] })),
-    discoverOpenDesignWorld(store, args.refresh === true).catch((): OpenDesign3dDiscovery => ({ available: false, models: [] })),
+    spatialPromise,
   ]);
   const availableProviders = new Set(
     status.providers

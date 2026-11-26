@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { inspectGlb } from '../scripts/game-glb-inspect.mjs';
@@ -10,7 +10,7 @@ import { atomicAssetJson, assetHash } from './asset-library.ts';
 import type { CapabilityScriptContext, CapabilityScriptOutput } from './capability-scripts.ts';
 import { optimizeGlbTexturesForPublish } from './glb-optimize.ts';
 import { ProviderError, publicProviderFetch, retryRead, type Fetcher } from './network.ts';
-import { cloud3dModels, cloudWorldModels, mediaSubmitHeaders, productionApi, type Cloud3dModelEntry } from './opendesign.ts';
+import { cloud3dModels, cloudSpatialCatalog, cloudWorldModels, mediaSubmitHeaders, productionApi, type Cloud3dModelEntry } from './opendesign.ts';
 import { gatewayFor } from './service.ts';
 
 const DEFAULT_TRIPO_MODEL = 'tripo-3.0';
@@ -20,6 +20,7 @@ const POLL_INTERVAL_MS = 2500;
 const REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_TASK_TIMEOUT_MS = 300_000;
 const DISCOVERY_CACHE_TTL_MS = 60_000;
+const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MiB local safety cap before reading into memory
 const MAX_SPATIAL_DOWNLOAD_BYTES = 100 * 1024 * 1024; // 100 MiB hard streaming cap
 
 const QUALITY_PRESETS: Record<string, { faceLimit: number }> = {
@@ -225,6 +226,77 @@ export async function discoverOpenDesignWorld(
   return { available: true, provider: endpoint.provider, models: endpoint.models };
 }
 
+/** Discover both 3D asset and 3D world availability using one shared catalogue request per configured OpenDesign credential. */
+export async function discoverOpenDesignSpatial(
+  store: WorkspaceStore,
+  refresh = false,
+): Promise<{ live3d: OpenDesign3dDiscovery; liveWorld: OpenDesign3dDiscovery }> {
+  const env3d = readEnvConfig('OPENMOTION_TRIPO_ENABLED', 'OPENMOTION_TRIPO_API_KEY', 'OPENMOTION_TRIPO_KEY_FILE', 'OPENMOTION_TRIPO_BASE_URL');
+  const envWorld = readEnvConfig('OPENMOTION_WORLD_ENABLED', 'OPENMOTION_WORLD_API_KEY', 'OPENMOTION_WORLD_KEY_FILE', 'OPENMOTION_WORLD_BASE_URL');
+  const cacheKey = `${(store.workspaceStore ?? store).directory}::*`;
+  const now = Date.now();
+  const cached3d = !refresh && !env3d ? discoveryCache.get(cacheKey) : undefined;
+  const cachedWorld = !refresh && !envWorld ? worldDiscoveryCache.get(cacheKey) : undefined;
+  const hasFresh3d = Boolean(env3d || (cached3d && now - cached3d.at < DISCOVERY_CACHE_TTL_MS));
+  const hasFreshWorld = Boolean(envWorld || (cachedWorld && now - cachedWorld.at < DISCOVERY_CACHE_TTL_MS));
+  if (hasFresh3d && hasFreshWorld) {
+    return {
+      live3d: await discoverOpenDesign3d(store, false),
+      liveWorld: await discoverOpenDesignWorld(store, false),
+    };
+  }
+
+  const taskTimeoutMs = resolveTaskTimeoutMs();
+  const gateway = gatewayFor(store);
+  const fetcher = resolveFetcher(store);
+  const candidates: { provider: 'account' | 'opendesign'; baseUrl: string; key: string }[] = [];
+
+  const status = await gateway.status().catch(() => undefined);
+  const accountState = status?.providers.find(p => p.id === 'account');
+  const accountEntitled = !accountState || (accountState.available && accountState.mediaEntitlement !== 'not-included');
+  if (accountEntitled) {
+    const accountAccess = await gateway.account.controlAccess().catch(() => undefined);
+    if (accountAccess) {
+      candidates.push({ provider: 'account', baseUrl: accountAccess.baseUrl, key: accountAccess.key });
+    }
+  }
+  const cloudCred = await gateway.connections.resolveCredential('opendesign').catch(() => ({ key: '' }));
+  const cloudBase = await gateway.connections.baseUrl('opendesign').catch(() => undefined);
+  if (cloudCred.key && cloudBase) {
+    candidates.push({ provider: 'opendesign', baseUrl: cloudBase.replace(/\/+$/, ''), key: cloudCred.key });
+  }
+
+  let resolved3d: Resolved3dEndpoint | null = null;
+  let resolvedWorld: Resolved3dEndpoint | null = null;
+  for (const candidate of candidates) {
+    if ((env3d || resolved3d) && (envWorld || resolvedWorld)) break;
+    try {
+      const { models3d, modelsWorld } = await cloudSpatialCatalog(candidate.baseUrl, candidate.key, fetcher);
+      if (!env3d && !resolved3d && models3d.length > 0) {
+        resolved3d = { provider: candidate.provider, baseUrl: candidate.baseUrl, apiKey: candidate.key, taskTimeoutMs, models: models3d };
+      }
+      if (!envWorld && !resolvedWorld && modelsWorld.length > 0) {
+        resolvedWorld = { provider: candidate.provider, baseUrl: candidate.baseUrl, apiKey: candidate.key, taskTimeoutMs, models: modelsWorld };
+      }
+    } catch {
+      // Keep probing remaining configured OpenDesign credentials.
+    }
+  }
+
+  const stamp = Date.now();
+  if (!env3d) discoveryCache.set(cacheKey, { at: stamp, result: resolved3d });
+  if (!envWorld) worldDiscoveryCache.set(cacheKey, { at: stamp, result: resolvedWorld });
+
+  return {
+    live3d: env3d
+      ? await discoverOpenDesign3d(store, false)
+      : resolved3d ? { available: true, provider: resolved3d.provider, models: resolved3d.models } : { available: false, models: [] },
+    liveWorld: envWorld
+      ? await discoverOpenDesignWorld(store, false)
+      : resolvedWorld ? { available: true, provider: resolvedWorld.provider, models: resolvedWorld.models } : { available: false, models: [] },
+  };
+}
+
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -339,11 +411,43 @@ async function tripoJson<T = any>(
   return parsed as T;
 }
 
+function detectReferenceImageMime(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' | undefined {
+  if (bytes.length >= 8
+    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 12
+    && bytes.toString('ascii', 0, 4) === 'RIFF'
+    && bytes.toString('ascii', 8, 12) === 'WEBP') {
+    return 'image/webp';
+  }
+  return undefined;
+}
+
+const EXT_BY_MIME: Record<'image/png' | 'image/jpeg' | 'image/webp', string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+};
+
 async function prepareUploadReferenceBytes(filePath: string): Promise<{ bytes: Buffer; contentType: string; filename: string }> {
+  const info = await stat(filePath);
+  if (info.size <= 0 || info.size > MAX_REFERENCE_IMAGE_BYTES) {
+    throw new Error(`3D reference image must be between 1 byte and 20 MiB (got ${info.size} bytes)`);
+  }
   let bytes = await readFile(filePath);
+  const detectedMime = detectReferenceImageMime(bytes);
+  if (!detectedMime) {
+    throw new Error('3D reference asset must be a PNG, JPEG, or WebP image');
+  }
+  let contentType: string = detectedMime;
   const ext = path.extname(filePath).toLowerCase();
-  let contentType = MIME_BY_EXT[ext] ?? 'image/png';
-  let filename = path.basename(filePath);
+  const base = path.parse(path.basename(filePath)).name || 'reference';
+  let filename = MIME_BY_EXT[ext] === detectedMime ? path.basename(filePath) : `${base}${EXT_BY_MIME[detectedMime]}`;
 
   // AMR /api/v1/media/uploads rejects >2MB 2K PNGs with HTTP 413 asset_too_large; transcode large references cleanly to JPEG.
   if (bytes.length > 1_800_000 && (contentType === 'image/png' || contentType === 'image/webp' || contentType === 'image/jpeg')) {

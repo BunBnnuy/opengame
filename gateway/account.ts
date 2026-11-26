@@ -14,7 +14,7 @@ import { planMediaEntitlement } from './account-media.ts';
 import { registeredProvider } from '../shared/provider-registry.ts';
 import { defaultVideoAudioEnabled, resolveGenerationParameters } from '../shared/generation-options.ts';
 import { isSfxModel } from '../shared/audio-kind.ts';
-import { apiJson, ProviderError, retryRead, type Fetcher } from './network.ts';
+import { apiJson, MAX_MEDIA_BYTES, ProviderError, retryRead, streamMedia, type Fetcher } from './network.ts';
 import { cloudImageParameters, mediaSubmitHeaders, productionApi, uploadInputs } from './opendesign.ts';
 import type { ProviderContext } from './providers.ts';
 import { resumableDownload, type DownloadProgress } from './resumable-download.ts';
@@ -1099,19 +1099,34 @@ export class OpenDesignAccount {
       const assetId = typeof asset.asset_id === 'string' && /^[\w-]{1,180}$/.test(asset.asset_id) ? asset.asset_id : taskId;
       return { assetId, size: typeof asset.size_bytes === 'number' ? asset.size_bytes : undefined, mime: typeof asset.mime_type === 'string' ? asset.mime_type : 'audio/mpeg', url: asset.url };
     };
+    let completedTask: any;
     for (;;) {
       const task = await read();
       if (['failed', 'cancelled', 'canceled'].includes(task.status)) { await progress('remote_failed'); throw new Error(jobMessages.taskFailed); }
-      if (task.status === 'succeeded') break;
+      if (task.status === 'succeeded') { completedTask = task; break; }
       if (!['queued', 'pending', 'running', 'processing', 'submitted'].includes(task.status)) throw new Error(jobMessages.unknownTaskStatus);
       await progress('generating'); await delay(this.options.pollMs ?? 2000, undefined, { signal });
     }
-    return resumableDownload(directory, async () => {
-      const task = await read();
-      if (['failed', 'cancelled', 'canceled'].includes(task.status)) { await progress('remote_failed'); throw new Error(jobMessages.taskFailed); }
-      if (task.status !== 'succeeded') throw new Error(jobMessages.resultUnreadable);
-      return assetFrom(task);
-    }, signal, download => progress('downloading', undefined, download), this.options.download, 3, 'audio/');
+    const initialAsset = assetFrom(completedTask);
+    if (typeof initialAsset.size === 'number' && Number.isSafeInteger(initialAsset.size) && initialAsset.size >= 24) {
+      return resumableDownload(directory, async () => {
+        const task = await read();
+        if (['failed', 'cancelled', 'canceled'].includes(task.status)) { await progress('remote_failed'); throw new Error(jobMessages.taskFailed); }
+        if (task.status !== 'succeeded') throw new Error(jobMessages.resultUnreadable);
+        const resolved = assetFrom(task);
+        if (typeof resolved.size !== 'number') throw new Error(jobMessages.resultUnreadable);
+        return { ...resolved, size: resolved.size };
+      }, signal, download => progress('downloading', undefined, download), this.options.download, 3, 'audio/');
+    }
+    const transport = this.options.download ?? streamMedia;
+    const response = await retryRead(async () => {
+      const res = await transport(initialAsset.url, { signal });
+      if (!res.ok) throw new ProviderError('Audio download failed', res.status);
+      return res;
+    }, signal, 3);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < 24 || bytes.length > MAX_MEDIA_BYTES) throw new Error(jobMessages.resultUnreadable);
+    return bytes;
   }
   private async imageResult(job: GenerationJob, taskId: string, directory: string, signal: AbortSignal,
     progress: (phase: string, id?: string, download?: DownloadProgress) => Promise<void>) {

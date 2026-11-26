@@ -40,18 +40,20 @@ export type Cloud3dModelEntry = {
   bestFor?: string[];
 };
 
-async function cloudSpatialModels(
+const SPATIAL_3D_LABELS: Record<string, string> = {
+  'tripo-3.0': 'Tripo 3D v3 (GLB + PBR + optional rig/retarget)',
+};
+const SPATIAL_WORLD_LABELS: Record<string, string> = {
+  'worldlabs-atlas': 'World Labs Atlas v2 (Scene frames, RGB-D, Splats & Mesh)',
+};
+
+function filterSpatialEntries(
+  models: unknown[],
   kind: '3d_generations' | 'world_generations',
   labels: Record<string, string>,
-  baseUrl: string,
-  bearer: string,
-  fetcher: Fetcher = publicProviderFetch,
-): Promise<Cloud3dModelEntry[]> {
-  // AMR returns only image/video unless include_audio=true is passed.
-  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${bearer}` } });
-  if (!Array.isArray(body.models)) return [];
-  return body.models
-    .filter((row: any) => typeof row.model === 'string' && CLOUD_MODEL_ID_PATTERN.test(row.model) && row.kind === kind)
+): Cloud3dModelEntry[] {
+  return models
+    .filter((row: any) => typeof row?.model === 'string' && CLOUD_MODEL_ID_PATTERN.test(row.model) && row.kind === kind)
     .map((row: any) => ({
       modelId: row.model,
       label: labels[row.model] ?? row.model,
@@ -59,16 +61,26 @@ async function cloudSpatialModels(
     }));
 }
 
+export async function cloudSpatialCatalog(
+  baseUrl: string,
+  bearer: string,
+  fetcher: Fetcher = publicProviderFetch,
+): Promise<{ models3d: Cloud3dModelEntry[]; modelsWorld: Cloud3dModelEntry[] }> {
+  // AMR returns only image/video unless include_audio=true is passed.
+  const body = await apiJson(fetcher, baseUrl + CLOUD_MODELS_PATH, { headers: { Authorization: `Bearer ${bearer}` } });
+  if (!Array.isArray(body.models)) return { models3d: [], modelsWorld: [] };
+  return {
+    models3d: filterSpatialEntries(body.models, '3d_generations', SPATIAL_3D_LABELS),
+    modelsWorld: filterSpatialEntries(body.models, 'world_generations', SPATIAL_WORLD_LABELS),
+  };
+}
+
 export async function cloud3dModels(baseUrl: string, bearer: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
-  return cloudSpatialModels('3d_generations', {
-    'tripo-3.0': 'Tripo 3D v3 (GLB + PBR + optional rig/retarget)',
-  }, baseUrl, bearer, fetcher);
+  return (await cloudSpatialCatalog(baseUrl, bearer, fetcher)).models3d;
 }
 
 export async function cloudWorldModels(baseUrl: string, bearer: string, fetcher: Fetcher = publicProviderFetch): Promise<Cloud3dModelEntry[]> {
-  return cloudSpatialModels('world_generations', {
-    'worldlabs-atlas': 'World Labs Atlas v2 (Scene frames, RGB-D, Splats & Mesh)',
-  }, baseUrl, bearer, fetcher);
+  return (await cloudSpatialCatalog(baseUrl, bearer, fetcher)).modelsWorld;
 }
 
 /** Edit-capable image models accept references; video models with input images accept a first frame. */

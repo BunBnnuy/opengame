@@ -7,6 +7,8 @@ import { fixture } from './fixtures.ts';
 import { execute, pluginRoot } from '../hyperframes.ts';
 import { verificationBinaries } from '../scripts/verify-export.ts';
 import { Phase1Service } from '../phase1.ts';
+import { OpenDesignAccount } from '../gateway/account.ts';
+import { productionApi } from '../gateway/opendesign.ts';
 import { gatewayFor } from '../gateway/service.ts';
 import { clearOpenDesign3dDiscoveryCache } from '../gateway/opendesign-3d.ts';
 import {
@@ -1737,4 +1739,197 @@ test('capabilityRun resolves bare modelId without provider prefix against compat
     await Promise.all([...gateway.active.values()].map(task => task.done));
     const jobState = await api.call('openmotion_job_manage', { action: 'status', jobId: submitted.job.id });
     assert.equal(jobState.job.state, 'completed');
+  }, false));
+
+test('capabilityDiscover skips spatial probes for non-3D modalities and shares one catalogue fetch for unfiltered discovery', () =>
+  fixture(async store => {
+    clearOpenDesign3dDiscoveryCache();
+    const api = service(store);
+    const gateway = gatewayFor(store);
+    let modelListRequests = 0;
+
+    gateway.options.fetcher = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/media/models')) {
+        modelListRequests += 1;
+        return new Response(JSON.stringify({
+          models: [
+            { model: 'tripo-3.0', kind: '3d_generations' },
+            { model: 'worldlabs-atlas', kind: 'world_generations' },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({ error: `unexpected ${url}` }), { status: 404 });
+    }) as typeof fetch;
+
+    await gateway.configureProvider('opendesign', { apiKey: 'sk-test-opendesign', baseUrl: 'https://amr-mock.example.com', enabled: true });
+
+    try {
+      modelListRequests = 0;
+      await api.call('openmotion_capability_discover', { action: 'list', modality: 'image' });
+      await api.call('openmotion_capability_discover', { action: 'list', modality: 'audio' });
+      await api.call('openmotion_capability_discover', { action: 'describe', capabilityId: 'sound-effects' });
+      assert.equal(modelListRequests, 0, 'non-3D capability discovery must not probe 3D/world catalogues');
+
+      // Unfiltered list shares one spatial catalogue fetch across 3d-asset and 3d-world.
+      const unfiltered = await api.call('openmotion_capability_discover', { action: 'list', refresh: true });
+      assert.equal(modelListRequests, 1);
+      assert.equal(unfiltered.capabilities.find((c: any) => c.id === '3d-asset')?.available, true);
+      assert.equal(unfiltered.capabilities.find((c: any) => c.id === '3d-world')?.available, true);
+    } finally {
+      clearOpenDesign3dDiscoveryCache();
+    }
+  }, false));
+
+test('3d-asset rejects non-image references locally before calling AMR upload endpoints', () =>
+  fixture(async store => {
+    clearOpenDesign3dDiscoveryCache();
+    const api = service(store);
+    const gateway = gatewayFor(store);
+    let uploadRequests = 0;
+
+    gateway.options.fetcher = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/media/models')) {
+        return new Response(JSON.stringify({
+          models: [{ model: 'tripo-3.0', kind: '3d_generations' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/v1/media/uploads') || url.includes('/api/v1/media/3d/tasks')) {
+        uploadRequests += 1;
+      }
+      return new Response(JSON.stringify({ error: `unexpected ${url}` }), { status: 404 });
+    }) as typeof fetch;
+
+    await gateway.configureProvider('opendesign', { apiKey: 'sk-test-opendesign', baseUrl: 'https://amr-mock.example.com', enabled: true });
+
+    const wavFile = path.join(store.directory, 'not-an-image.wav');
+    await writeFile(wavFile, makeTinyWav());
+    const wavAsset = await api.call('openmotion_asset_manage', {
+      action: 'import',
+      requestId: 'import-wav-for-3d-guard',
+      sourcePath: wavFile,
+      name: 'Not An Image',
+    });
+
+    try {
+      await assert.rejects(
+        api.call('openmotion_capability_run', {
+          action: 'run',
+          requestId: 'tripo-reject-non-image-ref',
+          capabilityId: '3d-asset',
+          references: [{ assetId: wavAsset.asset.id, versionId: wavAsset.asset.currentVersionId }],
+        }),
+        /PNG, JPEG, or WebP image/,
+      );
+      assert.equal(uploadRequests, 0, 'non-image 3D reference must fail before calling /uploads or /3d/tasks');
+    } finally {
+      clearOpenDesign3dDiscoveryCache();
+    }
+  }, false));
+
+test('direct account sound-effects discovers via control-key probe, enforces 450-char cap, and completes /audio/sound-effects jobs', () =>
+  fixture(async store => {
+    const api = service(store);
+    const gateway = gatewayFor(store);
+    const wavBytes = makeTinyWav();
+    const sfxPosts: any[] = [];
+    const accountFetch = (async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === `${productionApi}/api/v1/billing/summary`) {
+        return Response.json({ membershipTier: 'plus', balanceUsd: '10.00', totalAvailableCreditsUsd: '10.00' });
+      }
+      if (url === `${productionApi}/api/v1/media/models?include_audio=true`) {
+        assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer acct-sfx-control');
+        return Response.json({
+          models: [{ model: 'elevenlabs-sound-v3', kind: 'audio_sound_effects' }],
+        });
+      }
+      if (url === `${productionApi}/api/v1/media/audio/sound-effects` && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body ?? '{}'));
+        sfxPosts.push(body);
+        return Response.json({ task_id: 'acct_sfx_task_1', status: 'queued' });
+      }
+      if (url === `${productionApi}/api/v1/media/audio/tasks/acct_sfx_task_1`) {
+        return Response.json({
+          task_id: 'acct_sfx_task_1',
+          model: 'elevenlabs-sound-v3',
+          status: 'succeeded',
+          assets: [{ asset_id: 'acct_sfx_asset_1', size_bytes: wavBytes.length, mime_type: 'audio/wav', url: 'https://cdn.example.invalid/acct-gong.wav' }],
+        });
+      }
+      return new Response(JSON.stringify({ error: `unexpected ${url}` }), { status: 404 });
+    }) as typeof fetch;
+
+    const account = gateway.account = new OpenDesignAccount(store.directory, {
+      pollMs: 10,
+      fetcher: accountFetch,
+      download: async () => new Response(wavBytes, {
+        status: 200,
+        headers: { etag: '"acct-sfx-1"', 'content-type': 'audio/wav', 'content-length': String(wavBytes.length) },
+      }),
+      run: async args => {
+        if (args[0] === 'model') return JSON.stringify({ source: 'remote', data: [] });
+        // Simulate an older CLI release that omits audio_sound_effects from `media models --json`.
+        if (args[0] === 'media') return JSON.stringify({ models: [{ model: 'gpt-image-2.6-flare', kind: 'image' }] });
+        return '{}';
+      },
+    });
+    gateway.options.pollMs = 10;
+
+    await mkdir(account.home, { recursive: true });
+    await writeFile(path.join(account.root, 'session.json'), JSON.stringify({ id: 'acct-sfx-session' }));
+    await writeFile(path.join(account.home, 'config.json'), JSON.stringify({
+      profiles: {
+        prod: {
+          apiUrl: productionApi,
+          user: { id: 'acct-sfx-user' },
+          controlKey: 'acct-sfx-control',
+          controlKeyId: 'acct-sfx-key-id',
+          runtimeKey: 'acct-sfx-runtime',
+        },
+      },
+    }));
+
+    try {
+      const models = await account.models(true);
+      assert.ok(models.some(m => m.id === 'account:elevenlabs-sound-v3' && m.kind === 'audio' && m.mode === 'text-to-audio'));
+
+      // >450-char prompt must fail before submitting any direct account SFX request.
+      const tooLong = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'acct-sfx-too-long',
+        capabilityId: 'sound-effects',
+        model: 'account:elevenlabs-sound-v3',
+        prompt: 'x'.repeat(451),
+      });
+      await gateway.tick();
+      await Promise.all([...gateway.active.values()].map(task => task.done));
+      const failedState = await api.call('openmotion_job_manage', { action: 'status', jobId: tooLong.job.id });
+      assert.equal(failedState.job.state, 'failed');
+      assert.match(failedState.job.error ?? '', /450/);
+      assert.equal(sfxPosts.length, 0);
+
+      // Valid prompt posts expected payload, polls /audio/tasks/{id}, and completes cleanly.
+      const submitted = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'acct-sfx-ok-1',
+        capabilityId: 'sound-effects',
+        model: 'account:elevenlabs-sound-v3',
+        prompt: 'Rain hitting temple bronze bell',
+        parameters: { duration_seconds: 3, loop: true, prompt_influence: 0.4 },
+      });
+      await gateway.tick();
+      await Promise.all([...gateway.active.values()].map(task => task.done));
+      const completedState = await api.call('openmotion_job_manage', { action: 'status', jobId: submitted.job.id });
+      assert.equal(completedState.job.state, 'completed', completedState.job.error);
+      assert.equal(sfxPosts.length, 1);
+      assert.deepEqual(sfxPosts[0], {
+        model: 'elevenlabs-sound-v3',
+        parameters: { duration_seconds: 3, loop: true, prompt_influence: 0.4, text: 'Rain hitting temple bronze bell' },
+      });
+    } finally {
+      account.close();
+      await gateway.close();
+    }
   }, false));
