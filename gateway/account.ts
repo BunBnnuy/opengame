@@ -10,8 +10,8 @@ import {
   attributedEntryId,
   buildPlacementId,
   cleanBillingUrl,
+  currentProductId,
   encodeMonetizationShortlink,
-  PRODUCT_ID,
   type MonetizationModality,
 } from '../shared/product-identity.ts';
 import { slug, validField, type EventFields } from '../tracking/core.ts';
@@ -260,7 +260,7 @@ function consoleAttributionParams(entryId: string, attribution?: AccountAttribut
   const modality = validModality(attribution?.modality) ?? 'all';
   return {
     billing: 'plan',
-    od_origin: PRODUCT_ID,
+    od_origin: currentProductId(),
     od_entry_source: hookId,
     od_entry_id: attributedEntryId(entryId),
     od_entry_at: new Date().toISOString(),
@@ -446,7 +446,7 @@ export class OpenDesignAccount {
     const errorKind = attempt.stages.findLast(entry => entry.split(':')[1] === 'failed' && !entry.startsWith('browser_open_result'))?.split(':')[2];
     const browser = attempt.stages.find(entry => entry.startsWith('browser_open_result:'))?.split(':')[1];
     const record = { attempt_id: attempt.id, outcome, error_code: errorCode, connector_problem: connector?.problem, connector_version: connectorVersion, resumed: Boolean(attempt.resumed),
-      source_product: PRODUCT_ID, source_detail: 'openmotion_editor_login',
+      source_product: currentProductId(), source_detail: 'openmotion_editor_login',
       ...(this.clock.hookId ? { hook_id: this.clock.hookId } : {}),
       entry_id: this.clock.entryId, entry_occurred_at: this.clock.occurredAt,
       ...(this.clock.entryFrom ? { entry_from: this.clock.entryFrom } : {}),
@@ -879,7 +879,7 @@ export class OpenDesignAccount {
       url: encodeMonetizationShortlink({
         target: 'd',
         entryId,
-        product: PRODUCT_ID,
+        product: currentProductId(),
         channel: options.channel ?? 'mcp_stdio',
         host: options.host ?? 'unknown',
         touchpoint: options.touchpoint ?? 'agent_media_upgrade_free',
@@ -898,7 +898,7 @@ export class OpenDesignAccount {
       url: encodeMonetizationShortlink({
         target: 'r',
         entryId,
-        product: PRODUCT_ID,
+        product: currentProductId(),
         channel: options.channel ?? 'mcp_stdio',
         host: options.host ?? 'unknown',
         touchpoint: options.touchpoint ?? 'agent_media_balance_low',

@@ -6,7 +6,7 @@ import type { Entry, Registry, PendingEvent, Receipt } from './core.ts';
 import { unknownHost } from './host.ts';
 import { unknownDevice } from './device.ts';
 import type { DeviceIdentity } from './device.ts';
-import { PRODUCT_ID } from '../shared/product-identity.ts';
+import { currentProductId } from '../shared/product-identity.ts';
 
 export type Identity = { installation_id: string; utm_source: string | null; created_at: string };
 const sourcePattern = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -98,7 +98,7 @@ export function posthogCommonProperties(options: {
     event_schema_version: 1,
     schema_version: 1,
     product: 'openmotion',
-    source_product: PRODUCT_ID,
+    source_product: currentProductId(),
     ...(hostContext ?? unknownHost),
     app_version: appVersion,
     env: endpoint.env,

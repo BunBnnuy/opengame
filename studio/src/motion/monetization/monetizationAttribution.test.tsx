@@ -294,4 +294,25 @@ describe('Scene-isolated monetization gate attribution (Motion, Assets, Design) 
       vi.unstubAllGlobals();
     }
   });
+
+  it('switches GUI od_origin and od_entry_id prefix dynamically from window.__OM_SOURCE_PRODUCT__ without rebuilding', async () => {
+    const { campaignPricingUrl } = await import('../campaignAttribution');
+    const win = window as unknown as { __OM_SOURCE_PRODUCT__?: string };
+    const previous = win.__OM_SOURCE_PRODUCT__;
+    const entryId = '22222222-3333-4444-8555-666666666666';
+    try {
+      win.__OM_SOURCE_PRODUCT__ = 'openmotion';
+      const motionUrl = new URL(campaignPricingUrl('en', 'opengame_balance_gate', entryId, { studioId: 'motion', modality: 'video', campaign: false }));
+      expect(motionUrl.searchParams.get('od_origin')).toBe('openmotion');
+      expect(motionUrl.searchParams.get('od_entry_id')).toBe(entryId);
+
+      win.__OM_SOURCE_PRODUCT__ = 'opengame';
+      const gameUrl = new URL(campaignPricingUrl('en', 'opengame_balance_gate', entryId, { studioId: 'game', modality: 'image', campaign: false }));
+      expect(gameUrl.searchParams.get('od_origin')).toBe('opengame');
+      expect(gameUrl.searchParams.get('od_entry_id')).toBe(`opengame-${entryId}`);
+    } finally {
+      if (previous === undefined) delete win.__OM_SOURCE_PRODUCT__;
+      else win.__OM_SOURCE_PRODUCT__ = previous;
+    }
+  });
 });

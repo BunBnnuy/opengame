@@ -1,10 +1,180 @@
 /**
- * The OpenMotion repository sets PRODUCT_ID to 'openmotion'.
- * Preserve each repository's value when synchronizing code.
+ * Repository-agnostic product identity resolution.
+ *
+ * OpenMotion and OpenGame share identical source code; product identity is derived from the
+ * distribution/runtime boundary rather than a hardcoded constant:
+ *   Node:    OPENMOTION_PRODUCT env -> shared/build-info.json (`product`) -> GITHUB_REPOSITORY
+ *            -> .git remote URL (origin, then upstream; supports git worktrees) -> 'openmotion'
+ *   Browser: window.__OM_SOURCE_PRODUCT__ (injected by editor-server.ts) -> __OM_BUILD_PRODUCT__
+ *            (defined by Vite from the Node resolver) -> 'openmotion'
  */
+declare const __OM_BUILD_PRODUCT__: string | undefined;
+
 export type ProductId = 'openmotion' | 'opengame';
-export const PRODUCT_ID: ProductId = 'opengame' as const;
-export const PRODUCT_UTM_SOURCE = PRODUCT_ID;
+
+const VALID_PRODUCTS = new Set<string>(['openmotion', 'opengame']);
+
+export function parseProductId(value: unknown): ProductId | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  return VALID_PRODUCTS.has(normalized) ? normalized as ProductId : undefined;
+}
+
+export function productIdFromRepositoryRef(value: string | null | undefined): ProductId | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const withoutQueryOrHash = trimmed.split(/[?#]/, 1)[0] ?? '';
+  const withoutTrailingSlash = withoutQueryOrHash.replace(/\/+$/, '');
+  const withoutGitSuffix = withoutTrailingSlash.replace(/\.git$/i, '');
+  const segment = withoutGitSuffix.split(/[/:]/).pop()?.trim().toLowerCase() ?? '';
+  if (/^(?:agi-)?opengame$/.test(segment)) return 'opengame';
+  if (/^(?:agi-)?openmotion$/.test(segment)) return 'openmotion';
+  return undefined;
+}
+
+export function parseGitConfigRemoteUrls(configText: string): { origin?: string; upstream?: string } {
+  const remotes: { origin?: string; upstream?: string } = {};
+  let currentRemote: 'origin' | 'upstream' | undefined;
+  for (const rawLine of configText.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue;
+    if (line.startsWith('[')) {
+      const match = /^\[remote\s+"([^"]+)"\]$/i.exec(line);
+      const name = match?.[1]?.toLowerCase();
+      currentRemote = name === 'origin' || name === 'upstream' ? name : undefined;
+      continue;
+    }
+    if (!currentRemote) continue;
+    const eqIndex = line.indexOf('=');
+    if (eqIndex <= 0) continue;
+    const key = line.slice(0, eqIndex).trim().toLowerCase();
+    if (key !== 'url') continue;
+    const url = line.slice(eqIndex + 1).trim();
+    if (url && !remotes[currentRemote]) remotes[currentRemote] = url;
+  }
+  return remotes;
+}
+
+type NodeFsLike = {
+  readFileSync(filePath: string, encoding: 'utf8'): string;
+  statSync(filePath: string): { isDirectory(): boolean; isFile(): boolean };
+};
+type NodePathLike = {
+  dirname(filePath: string): string;
+  join(...paths: string[]): string;
+  resolve(...paths: string[]): string;
+};
+type NodeUrlLike = {
+  fileURLToPath(url: URL | string): string;
+};
+type NodeProcessLike = {
+  env?: Record<string, string | undefined>;
+  getBuiltinModule?: (specifier: string) => unknown;
+};
+
+function readNodeBuiltins(): { proc: NodeProcessLike; fs: NodeFsLike; path: NodePathLike; url: NodeUrlLike } | null {
+  const proc = (globalThis as { process?: NodeProcessLike }).process;
+  if (!proc || typeof proc.getBuiltinModule !== 'function') return null;
+  const fs = proc.getBuiltinModule('node:fs') as NodeFsLike | undefined;
+  const path = proc.getBuiltinModule('node:path') as NodePathLike | undefined;
+  const url = proc.getBuiltinModule('node:url') as NodeUrlLike | undefined;
+  if (!fs || !path || !url) return null;
+  return { proc, fs, path, url };
+}
+
+function readGitConfigTexts(rootDir: string, fs: NodeFsLike, path: NodePathLike): string[] {
+  const gitEntry = path.join(rootDir, '.git');
+  let info: { isDirectory(): boolean; isFile(): boolean };
+  try {
+    info = fs.statSync(gitEntry);
+  } catch {
+    return [];
+  }
+  const candidates: string[] = [];
+  if (info.isDirectory()) {
+    candidates.push(path.join(gitEntry, 'config'));
+  } else if (info.isFile()) {
+    try {
+      const pointer = fs.readFileSync(gitEntry, 'utf8');
+      const match = /^gitdir:\s*(.+)$/im.exec(pointer);
+      if (match?.[1]) {
+        const gitDir = path.resolve(rootDir, match[1].trim());
+        candidates.push(path.join(gitDir, 'config'));
+        try {
+          const commonDirRaw = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+          if (commonDirRaw) {
+            candidates.push(path.join(path.resolve(gitDir, commonDirRaw), 'config'));
+          }
+        } catch { /* Standard non-worktree gitfile has no commondir. */ }
+      }
+    } catch { /* Ignore unreadable .git file. */ }
+  }
+  const contents: string[] = [];
+  for (const configPath of candidates) {
+    try {
+      contents.push(fs.readFileSync(configPath, 'utf8'));
+    } catch { /* Ignore missing config candidate. */ }
+  }
+  return contents;
+}
+
+export function resolveNodeProductId(options: {
+  env?: Record<string, string | undefined>;
+  rootDir?: string;
+} = {}): ProductId {
+  const builtins = readNodeBuiltins();
+  const env = options.env ?? builtins?.proc.env ?? {};
+
+  const fromEnv = parseProductId(env.OPENMOTION_PRODUCT);
+  if (fromEnv) return fromEnv;
+
+  const rootDir = options.rootDir
+    ?? (builtins ? builtins.path.resolve(builtins.path.dirname(builtins.url.fileURLToPath(import.meta.url)), '..') : undefined);
+
+  if (builtins && rootDir) {
+    try {
+      const buildInfo = JSON.parse(builtins.fs.readFileSync(builtins.path.join(rootDir, 'shared', 'build-info.json'), 'utf8')) as { product?: unknown };
+      const fromBuildInfo = parseProductId(buildInfo?.product);
+      if (fromBuildInfo) return fromBuildInfo;
+    } catch { /* Build metadata is optional during local development. */ }
+  }
+
+  const fromGithubRepo = productIdFromRepositoryRef(env.GITHUB_REPOSITORY);
+  if (fromGithubRepo) return fromGithubRepo;
+
+  if (builtins && rootDir) {
+    for (const configText of readGitConfigTexts(rootDir, builtins.fs, builtins.path)) {
+      const remotes = parseGitConfigRemoteUrls(configText);
+      const fromOrigin = productIdFromRepositoryRef(remotes.origin);
+      if (fromOrigin) return fromOrigin;
+      const fromUpstream = productIdFromRepositoryRef(remotes.upstream);
+      if (fromUpstream) return fromUpstream;
+    }
+  }
+
+  return 'openmotion';
+}
+
+let cachedNodeProductId: ProductId | undefined;
+
+export function currentProductId(): ProductId {
+  if (typeof window !== 'undefined') {
+    const injected = parseProductId((globalThis as { __OM_SOURCE_PRODUCT__?: unknown }).__OM_SOURCE_PRODUCT__);
+    if (injected) return injected;
+    const fromBuild = typeof __OM_BUILD_PRODUCT__ !== 'undefined' ? parseProductId(__OM_BUILD_PRODUCT__) : undefined;
+    if (fromBuild) return fromBuild;
+    return 'openmotion';
+  }
+  const proc = (globalThis as { process?: NodeProcessLike }).process;
+  const fromEnv = parseProductId(proc?.env?.OPENMOTION_PRODUCT);
+  if (fromEnv) return fromEnv;
+  if (!cachedNodeProductId) cachedNodeProductId = resolveNodeProductId();
+  return cachedNodeProductId;
+}
+
+export const PRODUCT_ID: ProductId = currentProductId();
+export const PRODUCT_UTM_SOURCE: ProductId = PRODUCT_ID;
 
 export type MonetizationShortlinkTarget = 'd' | 'r' | 'p';
 export type MonetizationModality = 'image' | 'video' | 'audio' | 'all';
@@ -45,7 +215,6 @@ for (let i = 0; i < B64URL_ALPHABET.length; i++) {
 
 const VALID_MODALITIES = new Set<string>(['image', 'video', 'audio', 'all']);
 const VALID_TARGETS = new Set<string>(['d', 'r', 'p']);
-const VALID_PRODUCTS = new Set<string>(['openmotion', 'opengame']);
 const SAFE_SHORTLINK_SEGMENT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 function bytesToBase64Url(bytes: Uint8Array): string {
@@ -147,7 +316,7 @@ export function attributedEntryIdFor(product: ProductId, uuid: string): string {
 }
 
 export function attributedEntryId(uuid: string): string {
-  return attributedEntryIdFor(PRODUCT_ID, uuid);
+  return attributedEntryIdFor(currentProductId(), uuid);
 }
 
 export function buildPlacementId(
@@ -175,7 +344,7 @@ export function encodeMonetizationShortlink(input: MonetizationShortlinkInput): 
   if (!VALID_TARGETS.has(input.target)) {
     throw new Error('INVALID_SHORTLINK_TARGET');
   }
-  const product: ProductId = input.product && VALID_PRODUCTS.has(input.product) ? input.product : PRODUCT_ID;
+  const product: ProductId = input.product && VALID_PRODUCTS.has(input.product) ? input.product : currentProductId();
   const uuidB64Url = uuidToBase64Url(input.entryId);
   const channel = sanitizeSegment(input.channel, 'unknown', 31);
   const host = sanitizeSegment(input.host, 'unknown', 31);

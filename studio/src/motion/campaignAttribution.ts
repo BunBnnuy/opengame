@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { attributedEntryId, buildPlacementId, PRODUCT_ID, type MonetizationModality } from '../../../shared/product-identity';
+import { attributedEntryId, buildPlacementId, currentProductId, type MonetizationModality } from '../../../shared/product-identity';
 import type { EntitlementHookId } from '../../../tracking/events.ts';
 import { isDesktopApp } from '../utils/platformHost';
 import type { ExploreFilters } from './workspacePageRouting';
@@ -162,7 +162,7 @@ export function campaignPricingUrl(
   const campaign = campaignOverride ?? context?.campaign ?? blackFridayActive(at.getTime());
   const url = new URL((locale ?? '').startsWith('zh') ? 'https://open-design.ai/zh/pricing/' : 'https://open-design.ai/pricing/');
   url.search = new URLSearchParams({
-    od_origin: PRODUCT_ID,
+    od_origin: currentProductId(),
     od_entry_source: entrySourceHookId[source],
     od_entry_id: attributedEntryId(entryId),
     od_entry_at: at.toISOString(),
