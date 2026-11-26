@@ -8471,3 +8471,91 @@ it('shows building overlay only while the chat is actively running and defaults 
     container.remove();
   }
 });
+
+it('keeps the game building overlay mounted while a chat is waiting on approval', async () => {
+  clearSuperAgentCache();
+  const waitingChatId = 'chat-waiting-approval-game';
+  const buildingGameId = 'game-waiting-approval';
+  const gameArtifact = {
+    id: `game:${buildingGameId}`,
+    kind: 'game-project' as const,
+    title: 'Waiting Build Game',
+    subtitle: 'casual · Game Studio',
+    projectId: buildingGameId,
+    scenario: 'landscape',
+    revision: '2026-11-26T06:00:00.000Z',
+    url: `/motion-api/games/${buildingGameId}/play/index.html`,
+    createdAt: 1000,
+    updatedAt: 2000,
+  };
+  const waitingChat: SuperAgentChat = {
+    ...sampleChat,
+    id: waitingChatId,
+    title: 'Waiting Build',
+    intent: 'game',
+    state: 'waiting',
+    activeArtifactId: gameArtifact.id,
+    artifacts: [gameArtifact],
+  };
+
+  const baseFetch = globalThis.fetch;
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes(`${SUPER_AGENT_API}/chats/${waitingChatId}`)) return Response.json({ conversation: waitingChat });
+    if (url.includes(`${SUPER_AGENT_API}/chats`)) return Response.json({ conversations: [summarizeSuperAgentChat(waitingChat)] });
+    if ((url.includes('/motion-api/games') || url.includes('/api/games')) && !url.includes('/play/')) {
+      return Response.json({
+        games: [
+          {
+            id: buildingGameId,
+            title: 'Waiting Build Game',
+            description: 'Building while waiting on generation approval',
+            genre: 'casual',
+            orientation: 'landscape',
+            multiplayer: false,
+            maxPlayers: 1,
+            status: 'building',
+            source: 'mine',
+            playUrl: `/api/games/${buildingGameId}/play/index.html`,
+            plays: 0,
+            likes: 0,
+            dislikes: 0,
+            createdAt: '2026-11-26T06:00:00.000Z',
+            updatedAt: '2026-11-26T06:00:00.000Z',
+          },
+        ],
+      });
+    }
+    return baseFetch(input, init);
+  }) as typeof fetch;
+
+  await act(async () => {
+    root.render(
+      <I18nProvider initialLocale="en">
+        <SuperAgentWorkspace
+          active
+          chatId={waitingChatId}
+          onChatIdChange={vi.fn()}
+          onOpenDesignProject={vi.fn()}
+          onOpenMotionProject={vi.fn()}
+          onOpenAsset={vi.fn()}
+          onOpenBrandKit={vi.fn()}
+          onOpenAgentSettings={vi.fn()}
+          onOpenMcp={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+  });
+  await flush();
+
+  const viewerToggle = [...document.querySelectorAll('button')].find(
+    b => b.getAttribute('aria-label') === 'Artifact Viewer',
+  ) as HTMLButtonElement;
+  expect(viewerToggle).toBeTruthy();
+  await act(async () => viewerToggle.click());
+  await vi.waitFor(async () => {
+    await flush();
+    expect(document.querySelector('.om-sa-viewer .om-sa-game-draft-stage')).not.toBeNull();
+  }, { timeout: 3000 });
+  expect(document.querySelector(`.om-sa-viewer iframe[title="${gameArtifact.title}"]`)).toBeNull();
+});
