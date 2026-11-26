@@ -1613,8 +1613,11 @@ export function SuperAgentWorkspace({
       }
       pendingDouyinPublishRef.current = { sourceChatId, chatId: conversation.id, sourceArtifactId, artifactId: artifact.id, options };
       onChatIdChange(conversation.id);
-    } catch (error) {
-      if (stillCurrent()) showToast(error instanceof Error ? error.message : t('Could not start Super Agent'), 'error');
+    } catch {
+      if (!stillCurrent()) return;
+      pendingDouyinPublishRef.current = null;
+      continueDouyinPublish(sourceArtifactId, sourceArtifactId, null, options);
+      showToast(t('Could not load the game’s conversation. Continue in the publish panel.'), 'error');
     }
   };
 

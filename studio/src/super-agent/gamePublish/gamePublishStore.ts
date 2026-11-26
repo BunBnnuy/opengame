@@ -4,8 +4,9 @@
  * State lives in memory for the session; persisting it is a backend task.
  *
  * Only real work is reported as done: the OpenDesign link (webPublishClient) and packages built
- * in the browser. WeChat Mini Game is guided by the Agent via openmotion_game_wechat; all other
- * platforms advance instantaneously through local inline step controls and record completion locally.
+ * in the browser. The Agent guides WeChat Mini Game via openmotion_game_wechat and Douyin Mini
+ * Game via step handoffs to the game's existing conversation. Without a linked conversation, Douyin
+ * uses local inline step controls, as do the other platforms.
  */
 import { useSyncExternalStore } from 'react';
 import { buildPlatformZip, buildPlayable, gameSlug, loadGameHtml, type GamePackageResult, type GamePackageTarget } from './gamePackage';
