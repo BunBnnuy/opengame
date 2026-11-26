@@ -1118,27 +1118,41 @@ test('non-macOS backend shutdown stops matching idle preview service, defers whe
   assert.deepEqual(noPidOutcome, { restarted: false, deferred: true });
   assert.deepEqual(busyKills, []);
 
-  // 3b) Pre-update backend (omits health.activeWork) with running export in jobs/<id>/job.json -> defers without killing
+  const fixedNow = 1_800_000_000_000;
+
+  // 3b) Pre-update backend (omits health.activeWork) with active export in jobs/<id>/job.json
+  // (future expiresAt + live workerPid) -> defers without killing
   const dataExportJob = path.join(root, 'export-job');
   await mkdir(path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111'), { recursive: true });
   await writeFile(path.join(dataExportJob, 'preview.json'), JSON.stringify({ port: busyPort, pid: 626262 }));
   await writeFile(
     path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111', 'job.json'),
-    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'running' }),
+    JSON.stringify({
+      id: '11111111-1111-1111-1111-111111111111',
+      state: 'running',
+      expiresAt: fixedNow + 60_000,
+      workerPid: 77777,
+    }),
   );
   const exportJobOutcome = await shutdownPreviewService(dataExportJob, {
+    now: () => fixedNow,
+    isPidAlive: pid => pid === 77777,
     probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataExportJob }),
     killProcess: pid => { busyKills.push(pid); },
   });
   assert.deepEqual(exportJobOutcome, { restarted: false, deferred: true });
   assert.deepEqual(busyKills, []);
 
-  // 3c) Pre-update backend with running export in export.json mirror only -> defers without killing
+  // 3c) Pre-update backend with live pending export in export.json mirror only (future expiresAt) -> defers
   const dataExportMirror = path.join(root, 'export-mirror');
   await mkdir(dataExportMirror, { recursive: true });
   await writeFile(path.join(dataExportMirror, 'preview.json'), JSON.stringify({ port: busyPort, pid: 636363 }));
-  await writeFile(path.join(dataExportMirror, 'export.json'), JSON.stringify({ id: '22222222-2222-2222-2222-222222222222', state: 'pending' }));
+  await writeFile(
+    path.join(dataExportMirror, 'export.json'),
+    JSON.stringify({ id: '22222222-2222-2222-2222-222222222222', state: 'pending', expiresAt: fixedNow + 60_000 }),
+  );
   const exportMirrorOutcome = await shutdownPreviewService(dataExportMirror, {
+    now: () => fixedNow,
     probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataExportMirror }),
     killProcess: pid => { busyKills.push(pid); },
   });
@@ -1154,24 +1168,65 @@ test('non-macOS backend shutdown stops matching idle preview service, defers whe
     JSON.stringify({ id: '33333333-3333-3333-3333-333333333333', state: 'queued' }),
   );
   const gatewayJobOutcome = await shutdownPreviewService(dataGatewayJob, {
+    now: () => fixedNow,
     probeHealth: async () => ({ service: 'motion-preview', dataDirectory: dataGatewayJob }),
     killProcess: pid => { busyKills.push(pid); },
   });
   assert.deepEqual(gatewayJobOutcome, { restarted: false, deferred: true });
   assert.deepEqual(busyKills, []);
 
-  // 3e) Once export job completes (even if export.json still lags), pre-update backend stops cleanly
+  // 3e) Abandoned export records (expired expiresAt or dead workerPid) and dead-worker gateway jobs
+  // are ignored so pre-update backends still stop cleanly instead of deferring forever.
+  const dataAbandoned = path.join(root, 'abandoned-jobs');
+  await mkdir(path.join(dataAbandoned, 'jobs', '44444444-4444-4444-4444-444444444444'), { recursive: true });
+  await mkdir(path.join(dataAbandoned, 'jobs', '55555555-5555-5555-5555-555555555555'), { recursive: true });
+  await mkdir(path.join(dataAbandoned, 'model-gateway', 'jobs'), { recursive: true });
+  await writeFile(path.join(dataAbandoned, 'preview.json'), JSON.stringify({ port: busyPort, pid: 656565 }));
+  // Expired export with live workerPid
+  await writeFile(
+    path.join(dataAbandoned, 'jobs', '44444444-4444-4444-4444-444444444444', 'job.json'),
+    JSON.stringify({ id: '44444444-4444-4444-4444-444444444444', state: 'running', expiresAt: fixedNow - 1_000, workerPid: 77777 }),
+  );
+  // Future expiresAt export whose workerPid died
+  await writeFile(
+    path.join(dataAbandoned, 'jobs', '55555555-5555-5555-5555-555555555555', 'job.json'),
+    JSON.stringify({ id: '55555555-5555-5555-5555-555555555555', state: 'running', expiresAt: fixedNow + 60_000, workerPid: 88888 }),
+  );
+  // Running gateway job whose workerPid died
+  await writeFile(
+    path.join(dataAbandoned, 'model-gateway', 'jobs', '66666666-6666-6666-6666-666666666666.json'),
+    JSON.stringify({ id: '66666666-6666-6666-6666-666666666666', state: 'running', workerPid: 99999 }),
+  );
+  let abandonedBackendAlive = true;
+  const abandonedKills: number[] = [];
+  const abandonedOutcome = await shutdownPreviewService(dataAbandoned, {
+    now: () => fixedNow,
+    isPidAlive: pid => pid === 77777,
+    probeHealth: async () => (abandonedBackendAlive ? { service: 'motion-preview', dataDirectory: dataAbandoned } : null),
+    killProcess: pid => {
+      abandonedKills.push(pid);
+      abandonedBackendAlive = false;
+    },
+    waitMs: 500,
+    pollIntervalMs: 10,
+  });
+  assert.deepEqual(abandonedOutcome, { restarted: true, deferred: false });
+  assert.deepEqual(abandonedKills, [656565]);
+
+  // 3f) Once export job completes (even if export.json still lags with future expiresAt), backend stops cleanly
   await writeFile(
     path.join(dataExportJob, 'jobs', '11111111-1111-1111-1111-111111111111', 'job.json'),
-    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'completed' }),
+    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'completed', expiresAt: fixedNow + 60_000, workerPid: 77777 }),
   );
   await writeFile(
     path.join(dataExportJob, 'export.json'),
-    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'running' }),
+    JSON.stringify({ id: '11111111-1111-1111-1111-111111111111', state: 'running', expiresAt: fixedNow + 60_000, workerPid: 77777 }),
   );
   let exportBackendAlive = true;
   const completedKills: number[] = [];
   const completedOutcome = await shutdownPreviewService(dataExportJob, {
+    now: () => fixedNow,
+    isPidAlive: pid => pid === 77777,
     probeHealth: async () => (exportBackendAlive ? { service: 'motion-preview', dataDirectory: dataExportJob } : null),
     killProcess: pid => {
       completedKills.push(pid);

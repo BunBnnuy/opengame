@@ -746,6 +746,8 @@ type PreviewHealthProbe = {
 export type PreviewShutdownDeps = {
   probeHealth?: (port: number) => Promise<PreviewHealthProbe | null>;
   killProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  isPidAlive?: (pid: number) => boolean;
+  now?: () => number;
   waitMs?: number;
   pollIntervalMs?: number;
 };
@@ -756,9 +758,43 @@ async function normalizeDirectoryForCompare(dir: string): Promise<string> {
 }
 
 const ACTIVE_EXPORT_JOB_STATES = new Set(['pending', 'running', 'cancelling']);
-const ACTIVE_GATEWAY_JOB_STATES = new Set(['queued', 'running']);
 
-async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
+function defaultIsPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+function isExportJobActive(job: unknown, nowMs: number, isPidAlive: (pid: number) => boolean): boolean {
+  if (!job || typeof job !== 'object') return false;
+  const record = job as { state?: unknown; expiresAt?: unknown; workerPid?: unknown };
+  if (typeof record.state !== 'string' || !ACTIVE_EXPORT_JOB_STATES.has(record.state)) return false;
+  if (typeof record.expiresAt !== 'number' || !Number.isFinite(record.expiresAt) || record.expiresAt <= nowMs) {
+    return false;
+  }
+  if (record.state === 'pending') return true;
+  return typeof record.workerPid === 'number' && Number.isInteger(record.workerPid) && isPidAlive(record.workerPid);
+}
+
+function isGatewayJobActive(job: unknown, isPidAlive: (pid: number) => boolean): boolean {
+  if (!job || typeof job !== 'object') return false;
+  const record = job as { state?: unknown; workerPid?: unknown };
+  if (record.state === 'queued') return true;
+  if (record.state === 'running') {
+    return typeof record.workerPid === 'number' && Number.isInteger(record.workerPid) && isPidAlive(record.workerPid);
+  }
+  return false;
+}
+
+async function hasActiveWorkspaceJob(
+  dataDirectory: string,
+  nowMs: number,
+  isPidAlive: (pid: number) => boolean,
+): Promise<boolean> {
   const seenExportIds = new Set<string>();
 
   // 1) Authoritative per-export records (<dataDirectory>/jobs/<id>/job.json)
@@ -770,7 +806,7 @@ async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
         const job = JSON.parse(await readFile(path.join(dataDirectory, 'jobs', entry.name, 'job.json'), 'utf8'));
         const id = typeof job?.id === 'string' ? job.id : entry.name;
         seenExportIds.add(id);
-        if (typeof job?.state === 'string' && ACTIVE_EXPORT_JOB_STATES.has(job.state)) {
+        if (isExportJobActive(job, nowMs, isPidAlive)) {
           return true;
         }
       } catch {
@@ -785,7 +821,7 @@ async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
   try {
     const current = JSON.parse(await readFile(path.join(dataDirectory, 'export.json'), 'utf8'));
     const alreadyChecked = typeof current?.id === 'string' && seenExportIds.has(current.id);
-    if (!alreadyChecked && typeof current?.state === 'string' && ACTIVE_EXPORT_JOB_STATES.has(current.state)) {
+    if (!alreadyChecked && isExportJobActive(current, nowMs, isPidAlive)) {
       return true;
     }
   } catch {
@@ -799,7 +835,7 @@ async function hasActiveWorkspaceJob(dataDirectory: string): Promise<boolean> {
       if (!file.endsWith('.json')) continue;
       try {
         const job = JSON.parse(await readFile(path.join(dataDirectory, 'model-gateway', 'jobs', file), 'utf8'));
-        if (typeof job?.state === 'string' && ACTIVE_GATEWAY_JOB_STATES.has(job.state)) {
+        if (isGatewayJobActive(job, isPidAlive)) {
           return true;
         }
       } catch {
@@ -854,7 +890,9 @@ export async function shutdownPreviewService(
     return { restarted: false, deferred: false };
   }
 
-  if (health?.activeWork === true || await hasActiveWorkspaceJob(resolvedDataDir)) {
+  const nowMs = (deps.now ?? Date.now)();
+  const isPidAlive = deps.isPidAlive ?? defaultIsPidAlive;
+  if (health?.activeWork === true || await hasActiveWorkspaceJob(resolvedDataDir, nowMs, isPidAlive)) {
     return { restarted: false, deferred: true };
   }
 
