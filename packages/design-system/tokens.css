@@ -4,6 +4,7 @@
   --motion-font-sans: "Albert Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --motion-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
   --motion-font-display: "Albert Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --motion-creation-home-title-size: clamp(34px, 3.8cqi, 44px);
   --motion-creation-home-accent: #81fc58;
   --motion-creation-home-accent-ink: #1c2b15;
   --motion-creation-home-border: linear-gradient(35deg, #a8cbb66b, #62776c44 50%, #8da89a55);
@@ -48,6 +49,7 @@
   --motion-weight-regular: 400;
   --motion-weight-medium: 500;
   --motion-weight-semibold: 600;
+  --motion-weight-step-650: 650;
   --motion-weight-bold: 700;
   --motion-leading-tight: 1.25;
   --motion-leading-body: 1.5;
@@ -113,6 +115,7 @@
   --motion-radius-step-20: 20px;
   --motion-radius-step-28: 28px;
   --motion-radius-step-14: 14px;
+  --motion-radius-step-16: 16px;
   --motion-radius-step-18: 18px;
   --motion-radius-step-30: 30px;
   --motion-radius-step-10: 10px;

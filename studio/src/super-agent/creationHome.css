@@ -33,9 +33,9 @@
   align-items: center;
 }
 .om-sa-tile-top, .om-sa-game-cta { justify-content: space-between; }
-.om-sa-home-hero { margin: 0 0 40px; text-align: center; }
-.om-sa-home-hero h2 { margin: 0; font-size: clamp(34px, 3.8cqi, 44px); line-height: 1.45; font-weight: 650; }
-.om-sa-home-hero p { margin: 12px 0 0; color: var(--motion-muted); font-size: 15px; line-height: 22px; }
+.om-sa-home-hero { margin: 0 0 var(--motion-space-40); text-align: center; }
+.om-sa-home-hero h2 { margin: 0; font-size: var(--motion-creation-home-title-size); line-height: 1.45; font-weight: var(--motion-weight-step-650); }
+.om-sa-home-hero p { margin: var(--motion-space-12) 0 0; color: var(--motion-muted); font-size: var(--motion-text-step-15); line-height: 22px; }
 .om-sa-starter-grid {
   --sa-starter-gap: var(--motion-space-16);
   --sa-tile-side: max(112px, calc((min(100cqi, var(--sa-composer-max-width)) - 2 * var(--sa-starter-gap)) / 6));
@@ -83,7 +83,7 @@
 .om-sa-home .om-sa-starter-card {
   --sa-card-border: var(--motion-creation-home-border);
   --sa-card-glow-color: var(--motion-creation-home-design-glow);
-  --sa-card-radius: var(--motion-space-14);
+  --sa-card-radius: var(--motion-radius-step-14);
   display: grid;
   min-width: 0;
   min-height: 0;
@@ -140,7 +140,7 @@
 .om-sa-home .om-sa-game-feature {
   --sa-card-border: var(--motion-creation-home-game-border);
   --sa-card-glow-color: var(--motion-creation-home-game-glow);
-  --sa-card-radius: var(--motion-space-16);
+  --sa-card-radius: var(--motion-radius-step-16);
   grid-row: span 2;
   color: var(--motion-neutral-n1);
 }
@@ -186,11 +186,19 @@
   border-radius: var(--motion-radius-sm);
 }
 .om-sa-game-copy { gap: var(--motion-space-8); }
-.om-sa-game-copy strong { max-width: 20ch; white-space: pre-line; font-size: 32px; font-weight: 700; line-height: 1.35; }
+.om-sa-game-copy strong { max-width: 20ch; white-space: pre-line; font-size: var(--motion-text-display); font-weight: var(--motion-weight-bold); line-height: 1.35; }
 .om-sa-game-copy strong:lang(zh) { max-width: 100%; white-space: nowrap; }
 .om-sa-game-title-accent { color: var(--motion-brand); }
-.om-sa-game-copy small { color: var(--motion-neutral-n4); font-size: 14px; }
-.om-sa-game-cta { gap: 20px; min-height: 44px; margin-block-start: var(--motion-space-12); padding: 0 18px; font-size: 14px; font-weight: 650; border-radius: 8px; }
+.om-sa-game-copy small { color: var(--motion-neutral-n4); font-size: var(--motion-text-body); }
+.om-sa-game-cta {
+  gap: var(--motion-space-20);
+  min-height: 44px;
+  margin-block-start: var(--motion-space-12);
+  padding: 0 var(--motion-space-18);
+  font-size: var(--motion-text-body);
+  font-weight: var(--motion-weight-step-650);
+  border-radius: var(--motion-radius-editor-control);
+}
 
 @property --sa-game-cover-phase {
   syntax: '<angle>';
@@ -235,7 +243,7 @@
   }
 }
 @container sa-stream (max-width: 700px) {
-  .om-sa-home-hero { margin: 0 0 24px; }
+  .om-sa-home-hero { margin: 0 0 var(--motion-space-24); }
   .om-sa-starter-grid {
     --sa-starter-gap: var(--motion-space-12);
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -248,6 +256,6 @@
 @container sa-stream (max-width: 400px) {
   .om-sa-home .om-sa-game-feature { min-height: 242px; }
   .om-sa-game-feature .om-sa-starter-surface { padding: var(--motion-space-20) var(--motion-space-20) var(--motion-space-32); }
-  .om-sa-game-copy strong { font-size: 26px; }
-  .om-sa-game-copy strong:lang(zh) { font-size: min(26px, calc((100cqi - 42px) / 9)); }
+  .om-sa-game-copy strong { font-size: var(--motion-text-step-26); }
+  .om-sa-game-copy strong:lang(zh) { font-size: min(var(--motion-text-step-26), calc((100cqi - 42px) / 9)); }
 }
