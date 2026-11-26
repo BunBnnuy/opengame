@@ -161,11 +161,11 @@ export function CreationHome({ active, onEnterMode }: {
       <div className="om-sa-starter-grid" ref={starterGridRef}>
         <Button type="button" variant="plain" className="om-sa-starter-card om-sa-game-feature" aria-label={t('Build a game')} onClick={() => onEnterMode('game')}>
           <CardSurface>
-            <span className="om-sa-game-label"><RemixIcon name="gamepad-line" size={24} />{t('Build a game')} <span lang="en">New</span></span>
+            <span className="om-sa-game-label"><RemixIcon name="gamepad-line" size={20} />{t('Build a game')} <span className="om-badge" data-nav-badge="New" lang="en">New</span></span>
             <span className="om-sa-game-copy">
               <strong>{gameTitleStart}<span className="om-sa-game-title-accent">{gameTitleAccent}</span>{gameTitleEnd}</strong>
               <small>{t('Turn your idea into a playable game')}</small>
-              <span className="om-sa-game-cta">{t('Build a game')} <RemixIcon name="arrow-right-up-line" size={18} /></span>
+              <span className="om-sa-game-cta">{t('Build a game')} <RemixIcon name="arrow-right-up-line" size={16} /></span>
             </span>
           </CardSurface>
         </Button>

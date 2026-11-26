@@ -17,7 +17,7 @@
   --motion-creation-home-video-glow: #bfcada;
   --motion-creation-home-slides-glow: #d7c4a4;
   --motion-creation-home-more-glow: #aab3ad;
-  --motion-creation-home-shade: linear-gradient(0deg, #111a17fa, #111a1799 55%, #111a1733);
+  --motion-creation-home-shade: linear-gradient(to right, #08150fd0, #08150f66 30%, #08150f08 57%, #08150f00);
   --motion-black-friday-artwork: #821833;
   --motion-black-friday-night: #0b0605;
   --motion-black-friday-stage-black: #050303;
