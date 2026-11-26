@@ -293,13 +293,26 @@ test('fork write access and workflow trust are checked before any media transfer
   t.mock.method(globalThis, 'fetch', async input => {
     const url = String(input);
     if (url.endsWith('/pulls/42')) return Response.json({ state: 'open', draft: false, base: { ref: 'main', sha: 'b'.repeat(40) }, head: { sha: sourceSHA, repo: { full_name: 'contributor/fork' } }, maintainer_can_modify: false });
-    if (url === 'https://api.github.com/repos/OpenDesignHQ/opengame') return Response.json({ permissions: { push: true }, allow_squash_merge: true });
+    if (url === 'https://api.github.com/repos/nexu-io/opengame') return Response.json({ permissions: { push: true }, allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false });
     if (url.includes('/git/trees/')) return Response.json({ tree: url.includes(sourceSHA) ? f.tree() : [] });
     const file = f.tree().find(file => url.endsWith('/git/blobs/' + file.sha));
     assert(file, 'No storage or other API call is allowed before fork authorization: ' + url);
     return new Response(new Uint8Array(await f.read(file)));
   });
   await assert.rejects(preparePullRequest(42, true), /Allow edits by maintainers/);
+});
+
+test('the dry run checks Squash-only settings in the canonical repository before reading trees', async t => {
+  const token = process.env.OPENGAME_MEDIA_MAINTAINER_TOKEN;
+  process.env.OPENGAME_MEDIA_MAINTAINER_TOKEN = 'test-token';
+  t.after(() => { if (token === undefined) delete process.env.OPENGAME_MEDIA_MAINTAINER_TOKEN; else process.env.OPENGAME_MEDIA_MAINTAINER_TOKEN = token; });
+  const repo = 'https://api.github.com/repos/nexu-io/opengame';
+  t.mock.method(globalThis, 'fetch', async input => {
+    if (String(input) === `${repo}/pulls/42`) return Response.json({ state: 'open', base: { ref: 'main' }, head: { repo: { full_name: 'contributor/fork' } } });
+    assert.equal(String(input), repo);
+    return Response.json({ permissions: { push: true }, allow_squash_merge: true });
+  });
+  await assert.rejects(preparePullRequest(42, false), /Configure Squash merge only/);
 });
 
 test('ordinary fork PRs skip uploads and cleanup without requiring contributor edit permission', async t => {
@@ -317,7 +330,7 @@ test('ordinary fork PRs skip uploads and cleanup without requiring contributor e
   t.mock.method(globalThis, 'fetch', async input => {
     const url = String(input);
     if (url.endsWith('/pulls/42')) return Response.json({ state: 'open', draft: false, base: { ref: 'main', sha: 'b'.repeat(40) }, head: { sha: sourceSHA, repo: { full_name: 'contributor/fork' } }, maintainer_can_modify: false });
-    if (url === 'https://api.github.com/repos/OpenDesignHQ/opengame') return Response.json({ permissions: { push: true }, allow_squash_merge: true });
+    if (url === 'https://api.github.com/repos/nexu-io/opengame') return Response.json({ permissions: { push: true }, allow_squash_merge: true, allow_merge_commit: false, allow_rebase_merge: false });
     assert(url.includes('/git/trees/'), 'No media download, upload or cleanup write is allowed: ' + url);
     return Response.json({ tree: url.includes(sourceSHA) ? [{ path: 'server.ts', mode: '100644', sha: 'c'.repeat(40), size: 100, type: 'blob' }] : [] });
   });
@@ -343,11 +356,14 @@ test('the merge entry waits for new-head CI and then sends only a SHA-guarded Sq
     request: async (input, init) => {
       const url = String(input);
       if (url.endsWith('/graphql')) {
+        const { query, variables } = JSON.parse(String(init?.body));
+        assert.match(query, /repository\(owner:\$owner,name:\$name\)/);
+        assert.deepEqual(variables, { owner: 'nexu-io', name: 'opengame', number: 42 });
         const pr = mergeState();
         if (++polls === 1) pr.commits.nodes[0].commit.statusCheckRollup.contexts.nodes.pop();
         return Response.json({ data: { repository: { pullRequest: pr } } });
       }
-      assert.equal(url, 'https://api.github.com/repos/OpenDesignHQ/opengame/pulls/42/merge');
+      assert.equal(url, 'https://api.github.com/repos/nexu-io/opengame/pulls/42/merge');
       assert.equal(init?.method, 'PUT');
       assert.deepEqual(JSON.parse(String(init.body)), { merge_method: 'squash', sha: sourceSHA });
       merges++;
@@ -399,11 +415,30 @@ test('media preparation and merging are maintainer-dispatched and storage creden
   const merge = workflow.split('\n  merge:\n')[1];
   assert(merge.includes('needs: prepare') && merge.includes('needs.prepare.outputs.head_sha'));
   assert(!merge.includes('CLOUDFLARE_R2') && !merge.includes('AWS_'));
-  assert(merge.includes("github.ref == 'refs/heads/main'"));
+  for (const job of [workflow.split('\n  merge:\n')[0], merge]) {
+    assert.match(job, /^    if: github\.ref == 'refs\/heads\/main' && github\.repository == 'nexu-io\/opengame'$/m);
+  }
   assert(workflow.includes('ref: ${{ github.sha }}'));
   const result = spawnSync(process.execPath, ['scripts/merge-prepared-pr.ts', '42', sourceSHA], {
     encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: 'pull_request' },
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /maintainer-started workflow/);
+});
+
+test('both media entry points reject dispatch from another repository or workflow ref before requesting credentials', () => {
+  const repository = 'nexu-io/opengame';
+  const workflow = '/.github/workflows/prepare-pr-media.yml@refs/heads/main';
+  const dispatch = { GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
+    GITHUB_REPOSITORY: repository, GITHUB_WORKFLOW_REF: repository + workflow };
+  for (const args of [['scripts/prepare-pr-media.ts', '42', '--apply'], ['scripts/merge-prepared-pr.ts', '42', sourceSHA]]) {
+    for (const overrides of [{ GITHUB_REPOSITORY: 'contributor/opengame' }, { GITHUB_WORKFLOW_REF: 'contributor/opengame' + workflow }]) {
+      const result = spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...dispatch, ...overrides } });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /contributor\/opengame/);
+    }
+    const result = spawnSync(process.execPath, args, { encoding: 'utf8', env: dispatch });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Configure OPENGAME_MEDIA_MAINTAINER_TOKEN|Missing maintainer token/);
+  }
 });

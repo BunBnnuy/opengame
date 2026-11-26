@@ -13,7 +13,7 @@ export type CleanupChange = { path: string; content: string | null };
 export type CleanupPlan = { schemaVersion: 1; sourceSHA: string; pullNumber: number; changes: CleanupChange[]; media: MediaLock[] };
 
 const execute = promisify(execFile);
-const repository = 'OpenDesignHQ/opengame';
+const repository = 'nexu-io/opengame';
 export type TreeFile = { path: string; mode: string; sha: string; size: number; type: string };
 type Inputs = { head: TreeFile[]; base: TreeFile[]; sourceSHA: string; pullNumber: number };
 type Transfer = (file: MediaLock, bytes: Buffer) => Promise<void>;
@@ -192,7 +192,7 @@ export async function preparePullRequest(pullNumber: number, apply: boolean) {
   assert(pr.state === 'open' && pr.base.ref === 'main' && pr.head.repo, 'Require an open PR targeting main');
   const settings = await fetch('https://api.github.com/repos/' + repository, { headers: { authorization: 'Bearer ' + token }, redirect: 'error' }).then(response => response.json()) as any;
   assert(settings.permissions?.push, 'The configured GitHub identity must have maintainer write access');
-  assert(settings.allow_squash_merge && !settings.allow_merge_commit && !settings.allow_rebase_merge, 'Configure Squash merge only before transferring media; other merge methods retain intermediate large blobs');
+  assert(settings.allow_squash_merge === true && settings.allow_merge_commit === false && settings.allow_rebase_merge === false, 'Configure Squash merge only before transferring media; other merge methods retain intermediate large blobs');
   const head = await api(`git/trees/${pr.head.sha}?recursive=1`, pr.head.repo.full_name), base = await api(`git/trees/${pr.base.sha}?recursive=1`);
   assert(!head.truncated && !base.truncated, 'GitHub tree truncated; split this PR');
   const read = async (file: TreeFile) => {

@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { setTimeout } from 'node:timers/promises';
 import { isMain } from '../shared/entry.ts';
 
-const repository = 'OpenDesignHQ/opengame';
-const query = `query($number:Int!){repository(owner:"OpenDesignHQ",name:"opengame"){
+const repository = 'nexu-io/opengame';
+const [owner, name] = repository.split('/');
+const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){
   pullRequest(number:$number){state isDraft headRefOid baseRefName mergeable reviewDecision
     labels(first:100){nodes{name} pageInfo{hasNextPage}}
     latestReviews(first:100){nodes{state} pageInfo{hasNextPage}}
@@ -65,7 +66,7 @@ export async function mergePreparedPullRequest(number: number, expectedSHA: stri
   };
   const deadline = now() + timeout;
   while (now() < deadline) {
-    const state = await api('graphql', 'POST', { query, variables: { number } });
+    const state = await api('graphql', 'POST', { query, variables: { owner, name, number } });
     const pr = state.data?.repository?.pullRequest;
     assert(pr, 'PR not found');
     const status = preparedMergeStatus(pr, expectedSHA);

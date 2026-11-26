@@ -61,7 +61,7 @@ Add media under `<id>/source/assets/` and reference it by a relative path from t
 "localMedia": { "preview": "assets/reference.mp4", "poster": "assets/poster.webp" }
 ```
 
-When the final content is reviewed, a maintainer runs **Actions → Prepare and merge PR** once for that PR. It uploads changed media, verifies public downloads, replaces the files with links/identities and adds a cleanup commit to the same PR. A separate job then waits for CI and review of that exact commit before Squash merging through GitHub. The original author is retained. Personal forks must enable **Allow edits from maintainers**. There is no upload on every draft push, no replacement PR and no patch for the contributor to apply.
+When the final content is reviewed, a maintainer runs **Actions → Prepare and merge PR** on `main` in `nexu-io/opengame` for that PR. It uploads changed media, verifies public downloads, replaces the files with links/identities and adds a cleanup commit to the same PR. A separate job then waits for CI and review of that exact commit before Squash merging through GitHub. The original author is retained. Personal forks must enable **Allow edits from maintainers**. There is no upload on every draft push, no replacement PR and no patch for the contributor to apply.
 
 Raw large files can fail CI before preparation. After cleanup, the workflow waits for the new commit's CI and required review before Squash merge. If the contributor pushes another commit, the run stops; no new content is merged implicitly. If the contributor later revises media, prepare that revision again. See [the maintainer entry, one-time setup and failure behavior](repository-storage.md#prepare-final-pr-media-before-merging).
 
@@ -89,7 +89,7 @@ Source Studio and MCP consume repository edits locally. NPM installations withou
 
 ## Hosted catalog publication
 
-Merging template changes into `main` runs `publish-template-catalog.yml`. It fetches catalog LFS bytes, uploads source objects keyed by SHA-256, reuses existing objects, and publishes immutable metadata under `https://releases.open-design.ai/open-game/templates/snapshots/<commit>/`. Only after those uploads succeed does it update `https://releases.open-design.ai/open-game/templates/main/catalog.json`.
+Merging template changes into `main` in `nexu-io/opengame` runs `publish-template-catalog.yml`. It fetches catalog LFS bytes, uploads source objects keyed by SHA-256, reuses existing objects, and publishes immutable metadata under `https://releases.open-design.ai/open-game/templates/snapshots/<commit>/`. Only after those uploads succeed does it update `https://releases.open-design.ai/open-game/templates/main/catalog.json`.
 
 The publisher preserves `template.json` and `source/manifest.json` bytes and generates a separate `hosted-files.json` for logical-path-to-object lookup. It does not rewrite contributed files or existing CMS media URLs. Newly added source files are registered by `npm run templates:manifest -- <id>`; the same file manifest supports local and hosted reads. Editable project files in `template.json.entry.files` retain their path, size and hash fields; a download URL is optional for repository/hosted entries, which read the registered source file. CMS entries still require their CMS download URL.
 

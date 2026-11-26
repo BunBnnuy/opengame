@@ -5,6 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { buildTemplatePublication, finalizeTemplateSnapshot, publishTemplateCatalog, releaseCatalogPromotion } from '../.github/scripts/publish-template-catalog.mjs';
 
+test('hosted template publication jobs require the canonical repository and main', async () => {
+  for (const file of ['publish-template-catalog.yml', 'publish-game-templates.yml']) {
+    const workflow = await readFile(new URL('../.github/workflows/' + file, import.meta.url), 'utf8');
+    assert.match(workflow, /^    if: github\.repository == 'nexu-io\/opengame' && github\.ref == 'refs\/heads\/main'$/m, file);
+  }
+});
+
 const commit = 'a'.repeat(40);
 
 test('prepared release snapshot becomes the pointer only after an exact candidate and digest match', async t => {

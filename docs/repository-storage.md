@@ -9,7 +9,7 @@ Embedded documentation images must fit GitHub's 5 MB image-proxy limit. Three la
 ## Clone and run
 
 ```sh
-git clone --depth 1 https://github.com/OpenDesignHQ/opengame.git
+git clone --depth 1 https://github.com/nexu-io/opengame.git
 cd opengame
 npm ci
 npm run build:studio
@@ -52,7 +52,7 @@ For a contributed catalog template, use the [template-specific pull command](tem
 
 Contributors edit their original PR normally. A new catalog video, audio file or large image/font can be committed under `<id>/source/assets/` (at most 50 MiB per file). Git LFS remains a supported input, not a required account or separate upload step. Keep small imported assets and small README artwork in ordinary Git. Raw media can make the policy check red until final preparation; do not repeatedly transfer every draft update.
 
-After the content review, a maintainer opens **Actions → Prepare and merge PR → Run workflow**, selects `main` and enters the original PR number. Starting this workflow authorizes preparation and subsequent Squash merge of the prepared commit:
+After the content review, a maintainer opens `nexu-io/opengame` in GitHub, chooses **Actions → Prepare and merge PR → Run workflow**, selects `main` and enters the original PR number. Starting this workflow authorizes preparation and subsequent Squash merge of the prepared commit:
 
 1. Lock the current PR commit and check maintainer identity, fork edit permission and Squash-only repository settings.
 2. Build and validate a cleanup commit without running PR code, hooks, dependencies or `.lfsconfig`.

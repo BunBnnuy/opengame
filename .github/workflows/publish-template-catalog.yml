@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'OpenDesignHQ/opengame' && github.ref == 'refs/heads/main'
+    if: github.repository == 'nexu-io/opengame' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.ref == 'refs/heads/main' && github.repository == 'OpenDesignHQ/opengame'
+    if: github.ref == 'refs/heads/main' && github.repository == 'nexu-io/opengame'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -56,7 +56,7 @@ jobs:
 
   merge:
     needs: prepare
-    if: github.ref == 'refs/heads/main' && github.repository == 'OpenDesignHQ/opengame'
+    if: github.ref == 'refs/heads/main' && github.repository == 'nexu-io/opengame'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
