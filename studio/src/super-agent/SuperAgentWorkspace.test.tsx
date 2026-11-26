@@ -3591,8 +3591,11 @@ it('auto-enters Game mode when opened from Game Studio, plays games in Artifact 
   expect(viewer?.querySelector<HTMLInputElement>('input[aria-label="Artifact address bar"]')?.value).toBe('littleprince.dev');
   expect(chatCreateCalls).toBe(0);
 
+  // A template opened from the showcase list gets the switch rail; Remix lives there instead of the toolbar.
+  expect(viewer?.querySelector('.om-sa-template-feed-rail')).toBeTruthy();
+  expect(viewer?.querySelector('.om-sa-game-use-btn')).toBeNull();
   // Clicking "Remix" in the Artifact Viewer adds a template chip and editable prompt.
-  const viewerUseBtn = viewer?.querySelector('.om-sa-game-use-btn') as HTMLButtonElement;
+  const viewerUseBtn = viewer?.querySelector('.om-sa-template-feed-action[aria-label="Remix"]') as HTMLButtonElement;
   expect(viewerUseBtn).toBeTruthy();
   expect(viewerUseBtn.textContent).toContain('Remix');
   await act(async () => viewerUseBtn.click());

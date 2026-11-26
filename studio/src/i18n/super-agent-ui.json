@@ -1138,7 +1138,9 @@
     "Next template": "下一个",
     "Previous template (↑)": "上一个模板（↑）",
     "Next template (↓)": "下一个模板（↓）",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "上一个",
+    "Next game": "下一个"
   },
   "ja": {
     "Play again": "もう一度遊ぶ",
@@ -2279,7 +2281,9 @@
     "Next template": "次のテンプレート",
     "Previous template (↑)": "前のテンプレート（↑）",
     "Next template (↓)": "次のテンプレート（↓）",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "前へ",
+    "Next game": "次へ"
   },
   "ko": {
     "Play again": "다시 플레이",
@@ -3420,7 +3424,9 @@
     "Next template": "다음 템플릿",
     "Previous template (↑)": "이전 템플릿 (↑)",
     "Next template (↓)": "다음 템플릿 (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "이전",
+    "Next game": "다음"
   },
   "de": {
     "Play again": "Erneut spielen",
@@ -4564,7 +4570,9 @@
     "Next template": "Nächste Vorlage",
     "Previous template (↑)": "Vorherige Vorlage (↑)",
     "Next template (↓)": "Nächste Vorlage (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Zurück",
+    "Next game": "Weiter"
   },
   "fr": {
     "Play again": "Rejouer",
@@ -5708,7 +5716,9 @@
     "Next template": "Modèle suivant",
     "Previous template (↑)": "Modèle précédent (↑)",
     "Next template (↓)": "Modèle suivant (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Précédent",
+    "Next game": "Suivant"
   },
   "ru": {
     "Play again": "Сыграть ещё",
@@ -6854,7 +6864,9 @@
     "Next template": "Следующий шаблон",
     "Previous template (↑)": "Предыдущий шаблон (↑)",
     "Next template (↓)": "Следующий шаблон (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Назад",
+    "Next game": "Далее"
   },
   "es": {
     "Play again": "Volver a jugar",
@@ -7998,7 +8010,9 @@
     "Next template": "Plantilla siguiente",
     "Previous template (↑)": "Plantilla anterior (↑)",
     "Next template (↓)": "Plantilla siguiente (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Anterior",
+    "Next game": "Siguiente"
   },
   "pt-BR": {
     "Play again": "Jogar novamente",
@@ -9142,7 +9156,9 @@
     "Next template": "Próximo modelo",
     "Previous template (↑)": "Modelo anterior (↑)",
     "Next template (↓)": "Próximo modelo (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Anterior",
+    "Next game": "Próximo"
   },
   "it": {
     "Play again": "Gioca ancora",
@@ -10286,7 +10302,9 @@
     "Next template": "Modello successivo",
     "Previous template (↑)": "Modello precedente (↑)",
     "Next template (↓)": "Modello successivo (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Precedente",
+    "Next game": "Successivo"
   },
   "tr": {
     "Play again": "Tekrar oyna",
@@ -11427,6 +11445,8 @@
     "Next template": "Sonraki şablon",
     "Previous template (↑)": "Önceki şablon (↑)",
     "Next template (↓)": "Sonraki şablon (↓)",
-    "{current} / {total}": "{current} / {total}"
+    "{current} / {total}": "{current} / {total}",
+    "Prev game": "Önceki",
+    "Next game": "Sonraki"
   }
 }

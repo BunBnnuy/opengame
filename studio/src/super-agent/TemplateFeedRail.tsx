@@ -1,5 +1,5 @@
-import { IconButton } from 'open-design-ui/icon-button';
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { Button } from 'open-design-ui/button';
+import { useEffect, useRef, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Tooltip } from '../components/ui/Tooltip';
 import { useI18n } from '../i18n/I18n';
 import { RemixIcon } from '../icons/RemixIcons';
@@ -18,13 +18,18 @@ export type TemplateFeedControls = {
 };
 
 /**
- * Wraps the template game preview with a rail that never covers the game: previous / next and
- * position (Remix and Share stay in the preview toolbar). Wheel and trackpad gestures over the stage margins and the rail switch
+ * Wraps the template game preview with a rail that never covers the game: previous / next with the
+ * position, then the actions the pane passes in (like, Remix, Share). Wheel and trackpad gestures over the stage margins and the rail switch
  * templates; wheel and drag inside the game iframe never reach this document, so play is untouched.
  * The wrapper always renders (feed or not) so the game below keeps its place in the tree and is not
  * reloaded when the list stops containing it.
  */
-export function TemplateFeedStage({ feed, children }: { feed: TemplateFeedControls | null; children: ReactNode }) {
+export function TemplateFeedStage({ feed, actions, children }: {
+  feed: TemplateFeedControls | null;
+  /** Like / Remix / Share, shown under previous and next. */
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef(feed);
@@ -74,32 +79,79 @@ export function TemplateFeedStage({ feed, children }: { feed: TemplateFeedContro
     >
       <div className="om-sa-template-feed-stage">{children}</div>
       {feed && (
-      <div className="om-sa-template-feed-rail" role="toolbar" aria-label={t('Switch template')} aria-orientation={placement === 'side' ? 'vertical' : 'horizontal'}>
-        <Tooltip label={t('Previous template (↑)')} side={tooltipSide}>
-          <IconButton
-            variant="ghost"
-            className="motion-icon-button om-sa-template-feed-button"
-            aria-label={t('Previous template')}
-            disabled={!feed.position.prevId}
-            onClick={() => feed.onStep(-1)}
-            icon={<RemixIcon name="arrow-down-s-line" size={18} style={{ transform: 'rotate(180deg)' }} />}
-          />
-        </Tooltip>
-        <span className="om-sa-template-feed-count" aria-live="polite">
-          {t('{current} / {total}', { current: feed.position.index + 1, total: feed.position.total })}
-        </span>
-        <Tooltip label={t('Next template (↓)')} side={tooltipSide}>
-          <IconButton
-            variant="ghost"
-            className="motion-icon-button om-sa-template-feed-button"
-            aria-label={t('Next template')}
-            disabled={!feed.position.nextId}
-            onClick={() => feed.onStep(1)}
-            icon={<RemixIcon name="arrow-down-s-line" size={18} />}
-          />
-        </Tooltip>
-      </div>
+        <div className="om-sa-template-feed-rail" role="toolbar" aria-label={t('Switch template')} aria-orientation={placement === 'side' ? 'vertical' : 'horizontal'}>
+          <div className="om-sa-template-feed-group">
+            <TemplateFeedAction
+              icon="arrow-down-s-line"
+              iconStyle={{ transform: 'rotate(180deg)' }}
+              label={t('Prev game')}
+              ariaLabel={t('Previous template')}
+              tooltip={t('Previous template (↑)')}
+              tooltipSide={tooltipSide}
+              disabled={!feed.position.prevId}
+              onClick={() => feed.onStep(-1)}
+            />
+            <span className="om-sa-template-feed-count" aria-live="polite">
+              {t('{current} / {total}', { current: feed.position.index + 1, total: feed.position.total })}
+            </span>
+            <TemplateFeedAction
+              icon="arrow-down-s-line"
+              label={t('Next game')}
+              ariaLabel={t('Next template')}
+              tooltip={t('Next template (↓)')}
+              tooltipSide={tooltipSide}
+              disabled={!feed.position.nextId}
+              onClick={() => feed.onStep(1)}
+            />
+          </div>
+          {actions && (
+            <>
+              <span className="om-sa-template-feed-divider" aria-hidden="true" />
+              <div className="om-sa-template-feed-group">{actions}</div>
+            </>
+          )}
+        </div>
       )}
     </div>
   );
+}
+
+/** A round rail button with a short label under it, matching the community game feed. */
+export function TemplateFeedAction({
+  icon,
+  iconStyle,
+  label,
+  ariaLabel,
+  tooltip,
+  tooltipSide = 'left',
+  pressed,
+  disabled,
+  onClick,
+}: {
+  icon: string;
+  iconStyle?: CSSProperties;
+  label: string;
+  ariaLabel: string;
+  tooltip?: string;
+  tooltipSide?: 'top' | 'bottom' | 'left' | 'right';
+  pressed?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  const button = (
+    <Button
+      variant="plain"
+      type="button"
+      className="om-sa-template-feed-action"
+      aria-label={ariaLabel}
+      aria-pressed={pressed}
+      data-active={pressed || undefined}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <RemixIcon name={icon} size={18} style={iconStyle} />
+      <span className="om-sa-template-feed-action-label">{label}</span>
+    </Button>
+  );
+  return tooltip ? <Tooltip label={tooltip} side={tooltipSide}>{button}</Tooltip> : button;
 }

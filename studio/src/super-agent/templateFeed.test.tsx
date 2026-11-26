@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n/I18n';
 import { createWheelPager, templateFeedPosition } from './templateFeed';
-import { TemplateFeedStage } from './TemplateFeedRail';
+import { TemplateFeedAction, TemplateFeedStage } from './TemplateFeedRail';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -71,24 +71,31 @@ describe('TemplateFeedStage', () => {
 
   function render(position: { index: number; total: number; prevId: string | null; nextId: string | null } | null) {
     const onStep = vi.fn();
+    const onLike = vi.fn();
     host = document.createElement('div');
     document.body.append(host);
     root = createRoot(host);
     act(() => {
       root!.render(
         <I18nProvider>
-          <TemplateFeedStage feed={position ? { position, placement: 'side', onStep } : null}>
+          <TemplateFeedStage
+            feed={position ? { position, placement: 'side', onStep } : null}
+            actions={<TemplateFeedAction icon="thumb-up-line" label="Like" ariaLabel="Like" onClick={onLike} />}
+          >
             <iframe title="game" />
           </TemplateFeedStage>
         </I18nProvider>,
       );
     });
-    return { onStep, stage: host.querySelector<HTMLElement>('.om-sa-template-feed')! };
+    return { onStep, onLike, stage: host.querySelector<HTMLElement>('.om-sa-template-feed')! };
   }
 
   it('steps with the rail buttons and arrow keys, and disables the end of the list', () => {
-    const { onStep, stage } = render({ index: 0, total: 3, prevId: null, nextId: 'b' });
-    const [prev, next] = Array.from(stage.querySelectorAll<HTMLButtonElement>('.om-sa-template-feed-button'));
+    const { onStep, onLike, stage } = render({ index: 0, total: 3, prevId: null, nextId: 'b' });
+    const [prev, next, like] = Array.from(stage.querySelectorAll<HTMLButtonElement>('.om-sa-template-feed-action'));
+    act(() => like.click());
+    expect(onLike).toHaveBeenCalledTimes(1);
+    expect(onStep).not.toHaveBeenCalled();
     expect(prev.disabled).toBe(true);
     expect(stage.textContent).toContain('1 / 3');
 

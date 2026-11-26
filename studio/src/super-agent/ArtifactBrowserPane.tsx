@@ -74,7 +74,7 @@ import {
   type MotionProjectArtifactHandle,
 } from './MotionProjectArtifactView';
 import { SimpleMarkdown } from './SimpleMarkdown';
-import { TemplateFeedStage, type TemplateFeedControls } from './TemplateFeedRail';
+import { TemplateFeedAction, TemplateFeedStage, type TemplateFeedControls } from './TemplateFeedRail';
 
 type WebDevicePresetId = 'responsive' | 'desktop' | 'tablet' | 'mobile';
 
@@ -2062,6 +2062,49 @@ export function ArtifactBrowserPane({
     bundledMatch?.multiplayer || gameMeta?.multiplayer || isMultiplayerGameArtifact(activeArtifact)
   ));
   const toolbarGameAction = isGameTrial && !isMultiplayerGame ? onUseGameInAgent : undefined;
+  const gamePublishId = activeArtifact?.kind === 'game-project'
+    ? (activeArtifact.projectId || (activeArtifact.id.startsWith('game:') ? activeArtifact.id.slice('game:'.length) : ''))
+    : '';
+  const gameEmbedUrl = activeArtifact?.kind === 'game-project' && !activeArtifact.projectId && activeArtifact.url && /^https:\/\//i.test(activeArtifact.url)
+    ? activeArtifact.url
+    : undefined;
+  const canCloudShare = !showNewTab && (
+    (Boolean(activeArtifact?.projectId) && (activeArtifact?.kind === 'design-project' || activeArtifact?.kind === 'motion-project'))
+    || (activeArtifact?.kind === 'game-project' && Boolean(gamePublishId) && (Boolean(activeArtifact.projectId) || Boolean(gameEmbedUrl)))
+  );
+  // Template feed: like / Remix / Share move from the toolbar into the rail beside the game.
+  const feedRailActive = Boolean(templateFeed && activeArtifact?.kind === 'game-project' && (isGameTrial || viewMode === 'preview'));
+  const toolbarRemix = feedRailActive ? undefined : toolbarGameAction;
+  const toolbarCloudShare = canCloudShare && !feedRailActive;
+  // Likes are saved by the local game service, which knows bundled templates but not external community links.
+  const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && activeGameProjectId && isGameTrial);
+  // Viewer reactions from the local game service, loaded once while the rail is in use.
+  const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number }>>({});
+  const reactionsLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!feedRailActive || reactionsLoadedRef.current) return;
+    reactionsLoadedRef.current = true;
+    void gameApi.catalog()
+      .then(res => setGameReactions(prev => {
+        const next = { ...prev };
+        for (const game of res.games ?? []) if (!next[game.id]) next[game.id] = { reaction: game.reaction, likes: game.likes };
+        return next;
+      }))
+      .catch(() => { reactionsLoadedRef.current = false; /* offline: clicking Like explains why it cannot save */ });
+  }, [feedRailActive]);
+  const activeReaction = activeGameProjectId
+    ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0 }
+    : null;
+  const likeBusyRef = useRef(false);
+  const toggleGameLike = useCallback(() => {
+    if (!activeGameProjectId || !activeReaction || likeBusyRef.current) return;
+    likeBusyRef.current = true;
+    const next: -1 | 0 | 1 = activeReaction.reaction === 1 ? 0 : 1;
+    void gameApi.react(activeGameProjectId, next)
+      .then(game => setGameReactions(prev => ({ ...prev, [game.id]: { reaction: game.reaction, likes: game.likes } })))
+      .catch(() => onNotify?.(t('Start the local game service to save reactions.'), 'info'))
+      .finally(() => { likeBusyRef.current = false; });
+  }, [activeGameProjectId, activeReaction, onNotify, t]);
 
   const webColorScheme: BrowserColorScheme = webState?.colorScheme ?? 'auto';
   const webZoom = webState?.zoom ?? 1;
@@ -2609,16 +2652,6 @@ export function ArtifactBrowserPane({
         <div className="om-sa-context-actions">
           {(() => {
             const hasModeSwitch = activeArtifact?.kind === 'design-project' || Boolean(activeGameProjectId && !isGameTrial);
-            const gamePublishId = activeArtifact?.kind === 'game-project'
-              ? (activeArtifact.projectId || (activeArtifact.id.startsWith('game:') ? activeArtifact.id.slice('game:'.length) : ''))
-              : '';
-            const gameEmbedUrl = activeArtifact?.kind === 'game-project' && !activeArtifact.projectId && activeArtifact.url && /^https:\/\//i.test(activeArtifact.url)
-              ? activeArtifact.url
-              : undefined;
-            const canCloudShare = !showNewTab && (
-              (Boolean(activeArtifact?.projectId) && (activeArtifact?.kind === 'design-project' || activeArtifact?.kind === 'motion-project'))
-              || (activeArtifact?.kind === 'game-project' && Boolean(gamePublishId) && (Boolean(activeArtifact.projectId) || Boolean(gameEmbedUrl)))
-            );
             const activeDeviceIcon = activeArtifact?.kind === 'web'
               ? (webDevicePreset === 'mobile' ? 'smartphone-line' : webDevicePreset === 'tablet' ? 'tablet-line' : 'computer-line')
               : (viewport === 'mobile' ? 'smartphone-line' : viewport === 'tablet' ? 'tablet-line' : 'computer-line');
@@ -2858,7 +2891,7 @@ export function ArtifactBrowserPane({
                   </div>
                 )}
 
-                {toolbarGameAction && activeArtifact && (
+                {toolbarRemix && activeArtifact && (
                   <>
                     {(hasModeSwitch || showViewportMenu) && (
                       <span className="om-sa-toolbar-divider" aria-hidden="true" />
@@ -2869,7 +2902,7 @@ export function ArtifactBrowserPane({
                         type="button"
                         className="om-sa-toolbar-btn om-sa-game-use-btn"
                         aria-label={t('Remix')}
-                        onClick={() => toolbarGameAction(activeArtifact)}
+                        onClick={() => toolbarRemix(activeArtifact)}
                       >
                         <RemixIcon name="sparkling-line" size={14} />
                         <span>{t('Remix')}</span>
@@ -2930,11 +2963,11 @@ export function ArtifactBrowserPane({
                   </div>
                 )}
 
-                {canCloudShare && (hasModeSwitch || showViewportMenu || toolbarGameAction || (activeArtifact?.kind === 'motion-project' && Boolean(activeArtifact.projectId))) && (
+                {toolbarCloudShare && (hasModeSwitch || showViewportMenu || toolbarRemix || (activeArtifact?.kind === 'motion-project' && Boolean(activeArtifact.projectId))) && (
                   <span className="om-sa-toolbar-divider" aria-hidden="true" />
                 )}
 
-                {canCloudShare && activeArtifact && (activeArtifact.kind === 'game-project' || activeArtifact.kind === 'design-project' || activeArtifact.kind === 'motion-project') && (
+                {toolbarCloudShare && activeArtifact && (activeArtifact.kind === 'game-project' || activeArtifact.kind === 'design-project' || activeArtifact.kind === 'motion-project') && (
                   <WebPublishPopover
                     compact
                     targetKind={activeArtifact.kind === 'game-project' ? 'game' : activeArtifact.kind === 'motion-project' ? 'motion' : 'design'}
@@ -3598,8 +3631,42 @@ export function ArtifactBrowserPane({
             );
             // The workspace only passes templateFeed while the active tab is a template from the showcase list.
             // Always keep the wrapper so the game is not remounted when the controls come and go.
+            const railActions = feedRailActive ? (
+              <>
+                {canReactToGame && (
+                  <TemplateFeedAction
+                    icon={activeReaction?.reaction === 1 ? 'thumb-up-fill' : 'thumb-up-line'}
+                    label={activeReaction && activeReaction.likes > 0 ? String(activeReaction.likes) : t('Like')}
+                    ariaLabel={t('Like')}
+                    pressed={activeReaction?.reaction === 1}
+                    onClick={toggleGameLike}
+                  />
+                )}
+                {toolbarGameAction && (
+                  <TemplateFeedAction icon="sparkling-line" label={t('Remix')} ariaLabel={t('Remix')} onClick={() => toolbarGameAction(activeArtifact)} />
+                )}
+                {canCloudShare && (
+                  <WebPublishPopover
+                    compact
+                    targetKind="game"
+                    targetId={gamePublishId}
+                    embedUrl={gameEmbedUrl}
+                    filePath={activeArtifact.entry}
+                    title={activeArtifact.title}
+                    side={templateFeed?.placement === 'bottom' ? 'top' : 'left'}
+                    align={templateFeed?.placement === 'bottom' ? 'end' : 'center'}
+                    triggerClassName="om-sa-template-feed-action om-sa-template-feed-share"
+                    autoOpen={pendingDeployArtifactId === activeArtifact.id}
+                    onAutoOpenConsumed={onConsumeDeployRequest}
+                    revisionKey={activeArtifact.revision ?? String(activeArtifact.updatedAt)}
+                    onOpenAccount={onOpenAccountSettings}
+                    onNotify={onNotify}
+                  />
+                )}
+              </>
+            ) : null;
             return (
-              <TemplateFeedStage feed={templateFeed && (isGameTrial || viewMode === 'preview') ? templateFeed : null}>
+              <TemplateFeedStage feed={feedRailActive ? templateFeed : null} actions={railActions}>
                 {gameView}
               </TemplateFeedStage>
             );

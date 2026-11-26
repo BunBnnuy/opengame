@@ -12121,7 +12121,7 @@
   .om-sa-screw-result > svg { display: none; }
 }
 
-/* Template feed: previous / next rail beside the template game, never over it. */
+/* Template feed: previous / next, like, Remix and Share in a rail beside the template game, never over it. */
 .om-sa-template-feed {
   flex: 1 1 auto;
   min-width: 0;
@@ -12148,35 +12148,96 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  width: 52px;
-  padding: 8px 0;
+  gap: 14px;
+  width: 68px;
+  padding: 12px 0;
   border-left: 1px solid color-mix(in srgb, var(--motion-border) 70%, transparent);
   background: var(--motion-panel);
+  overflow-y: auto;
+}
+
+.om-sa-template-feed-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.om-sa-template-feed-divider {
+  width: 24px;
+  height: 1px;
+  background: color-mix(in srgb, var(--motion-border) 70%, transparent);
 }
 
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-rail {
   flex-direction: row;
   width: auto;
-  height: 44px;
-  padding: 0 8px;
+  height: auto;
+  padding: 6px 12px;
+  gap: 16px;
   border-left: 0;
   border-top: 1px solid color-mix(in srgb, var(--motion-border) 70%, transparent);
+  overflow: visible;
 }
 
-.om-sa-template-feed-button {
-  width: 36px;
-  height: 36px;
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-group {
+  flex-direction: row;
+  gap: 12px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-divider {
+  width: 1px;
+  height: 24px;
+}
+
+/* Round icon with a short label under it. The Share trigger comes from WebPublishPopover and
+   reuses the same look, so the svg itself carries the circle. */
+.om-sa-template-feed-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 48px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--motion-text);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.om-sa-template-feed-action > svg {
+  box-sizing: content-box;
+  width: 18px;
+  height: 18px;
+  padding: 9px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--motion-text) 8%, transparent);
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.om-sa-template-feed-button:not(:disabled):hover {
+.om-sa-template-feed-action:not(:disabled):hover > svg {
   background: color-mix(in srgb, var(--motion-text) 16%, transparent);
 }
 
-.om-sa-template-feed-button:disabled {
-  background: transparent;
+.om-sa-template-feed-action[data-active] > svg {
+  color: var(--motion-accent, #00aa54);
+  background: color-mix(in srgb, var(--motion-accent, #00aa54) 16%, transparent);
+}
+
+.om-sa-template-feed-action:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.om-sa-template-feed-action-label,
+.om-sa-template-feed-action .om-web-publish-trigger-label {
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--motion-muted);
 }
 
 .om-sa-template-feed-count {
