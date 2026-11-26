@@ -18,7 +18,7 @@ import { WorkspaceStore } from './workspace.ts';
 import { ensureRuntime, execute, pluginRoot, HYPERFRAMES_VERSION } from './hyperframes.ts';
 import { verificationBinaries } from './scripts/verify-export.ts';
 import type { Duplex } from 'node:stream';
-import { injectPreviewBridgeHtml, isValidPreviewBridgeToken } from './shared/preview-bridge.ts';
+import { injectPreviewBridgeHtml, injectViewportGuardHtml, isValidPreviewBridgeToken } from './shared/preview-bridge.ts';
 import { attachmentDisposition } from './shared/http-header.ts';
 import { HostedGameTemplates } from './shared/hosted-game-templates.ts';
 import { zip } from './scripts/zip.mjs';
@@ -1738,9 +1738,15 @@ export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: U
       }
       const file = await service.staticFile(id,rest.length?rest.join('/'):'index.html');
       const bridgeToken = url.searchParams.get('omBridge');
-      const payload = entry && file.mime.startsWith('text/html') && isValidPreviewBridgeToken(bridgeToken)
-        ? injectPreviewBridgeHtml(file.data, bridgeToken)
-        : file.data;
+      const hasBridge = isValidPreviewBridgeToken(bridgeToken);
+      const wantsViewportGuard = hasBridge
+        || url.searchParams.get('omViewportGuard') === '1'
+        || req.headers?.['sec-fetch-dest'] === 'iframe';
+      let payload: Buffer = file.data;
+      if (entry && file.mime.startsWith('text/html')) {
+        if (hasBridge) payload = injectPreviewBridgeHtml(payload, bridgeToken);
+        if (wantsViewportGuard) payload = injectViewportGuardHtml(payload);
+      }
       const origin = new URL(url); if (req.headers?.host) origin.host = req.headers.host;
       const encodedId = encodeURIComponent(id);
       const assetOrigins = `${origin.origin}/api/assets/ ${origin.origin}/motion-api/assets/`;
