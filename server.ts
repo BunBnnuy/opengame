@@ -1,4 +1,5 @@
 import { gameHttp, attachGameRooms } from './game-projects.ts';
+import { startLocalGamePreview } from './gateway/local-game-preview.ts';
 import type { ExportFailure } from './tracking/tool-fields.ts';
 import { toolFailureFields } from './tracking/tool-fields.ts';
 import { transcriptsFor, closeTranscripts } from './gateway/transcription.ts';
@@ -77,7 +78,7 @@ import { scenarioHttp } from './gateway/scenario-http.ts';
 import { designHttp } from './design-projects.ts';
 
 const sharedStore = new WorkspaceStore();
-export type Service = { trackingHosts?: Map<string, { host: HostContext; createdAt: number }>; diagnostics?: { running: boolean; lastExport: number; events: number; window: number }; studio?: Studio; runtimeRoot?: string; nativeRoot?: string; ffmpeg?: boolean; ffmpegPromise?: Promise<boolean>; poller?: AdaptivePoller; switching?: boolean; studioPort?: number; browser?: WorkspaceBrowser; editorToken?: string; ensureStudio?: (projectId?: string) => Promise<Studio>; launchStudio?: (directory: string, port: number) => Promise<Studio>; phase1?: Phase1Service; phase1Mutation?: Promise<void>; tracking?: OmTracking };
+export type Service = { trackingHosts?: Map<string, { host: HostContext; createdAt: number }>; diagnostics?: { running: boolean; lastExport: number; events: number; window: number }; studio?: Studio; runtimeRoot?: string; nativeRoot?: string; ffmpeg?: boolean; ffmpegPromise?: Promise<boolean>; poller?: AdaptivePoller; switching?: boolean; studioPort?: number; browser?: WorkspaceBrowser; editorToken?: string; ensureStudio?: (projectId?: string) => Promise<Studio>; launchStudio?: (directory: string, port: number) => Promise<Studio>; phase1?: Phase1Service; phase1Mutation?: Promise<void>; tracking?: OmTracking; localGamePreview?: { hosts: string[]; url: (id: string, search?: string) => string } };
 const service: Service = {};
 const working = new Set<string>();
 const runningExports = new Map<string, AbortController>();
@@ -1140,7 +1141,11 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
     if (motionRequest && url.pathname.startsWith('/api/scenarios/') && await scenarioHttp(req, res, url, store.workspaceStore ?? store)) return;
     if (motionRequest && url.pathname.startsWith('/api/assets/') && await assetHttp(req, res, url, store)) return;
     if (motionRequest && await brandKitHttp(req, res, url, store.directory, input)) return;
-    if ((url.pathname === '/api/games' || url.pathname.startsWith('/api/games/')) && await gameHttp(req, res, url, (store.workspaceStore ?? store).directory, input, context.runtimeRoot)) return;
+    if (url.pathname === '/api/games' || url.pathname.startsWith('/api/games/')) {
+      const preview = context.localGamePreview;
+      const localPreviewUrl = host && preview?.hosts.includes(host) ? preview.url : undefined;
+      if (await gameHttp(req, res, url, (store.workspaceStore ?? store).directory, input, context.runtimeRoot, { localPreviewUrl })) return;
+    }
     if (motionRequest && url.pathname.startsWith('/api/design/') && await designHttp(req, res, url, (store.workspaceStore ?? store).directory, new URL(editorUrl).origin, input, ref => new AssetLibrary(store.workspaceStore ?? store).resolve(ref))) return;
     if (motionRequest && ['/api/diagnostics', '/api/diagnostics/events'].includes(url.pathname)) {
       // Downloads are POST-only: cross-origin links must not trigger a collection.
@@ -1690,7 +1695,18 @@ export async function startServer(store = sharedStore, port = Number(process.env
       await listen(0);
     }
   } catch (error) { context.tracking?.close(); await context.studio?.close(); throw error; }
-  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const portInUse = (server.address() as { port: number }).port;
+  const origin = `http://127.0.0.1:${portInUse}`;
+  const localGamePreview = host === '127.0.0.1'
+    ? await startLocalGamePreview((store.workspaceStore ?? store).directory, runtimeRoot).catch(error => {
+      console.error('Isolated game previews could not start:', (error as Error).message);
+      return undefined;
+    })
+    : undefined;
+  if (localGamePreview) {
+    context.localGamePreview = { hosts: [`127.0.0.1:${portInUse}`, `localhost:${portInUse}`], url: localGamePreview.url };
+    server.once('close', localGamePreview.close);
+  }
   const gateway = gatewayFor(store, context.tracking);
   gateway.account.options.track = record => context.tracking?.track('account_sign_in_result', record);
   // `node --test` runs use synthetic connectors; skip the real installation there. Closing the service stops an unfinished one.

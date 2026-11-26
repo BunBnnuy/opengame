@@ -1723,7 +1723,18 @@ async function optionalJsonInput(req: IncomingMessage, maxBytes: number): Promis
   return text ? JSON.parse(text) : undefined;
 }
 
-export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: URL, workspace: string, input: (req: IncomingMessage, maxBytes?: number) => Promise<any>, runtimeRoot?: string) {
+type GameHttpOptions = {
+  isolatedPreview?: boolean;
+  localPreviewUrl?: (id: string, search?: string) => string;
+};
+
+// Bundled single-player games use game-relative assets. Workspace games can also depend
+// on the Studio asset library, which the isolated static listener does not expose.
+function canUseIsolatedPreview(game: GameCard) {
+  return game.source === 'template' && !game.multiplayer && !game.external;
+}
+
+export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: URL, workspace: string, input: (req: IncomingMessage, maxBytes?: number) => Promise<any>, runtimeRoot?: string, options: GameHttpOptions = {}) {
   const prefix = /^\/(?:api|motion-api)\/games(?=\/|$)/.exec(url.pathname)?.[0];
   if (!prefix) return false;
   const json = (status: number, data: unknown) => { res.writeHead(status, { 'Content-Type':'application/json', 'Cache-Control':'no-store' }); res.end(JSON.stringify(data)); return true; };
@@ -1731,6 +1742,10 @@ export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: U
     const service = gameProjectsFor(workspace, runtimeRoot), parts = url.pathname.slice(prefix.length).split('/').filter(Boolean).map(decodeURIComponent);
     if (!parts.length) { if (req.method === 'GET') return json(200, await service.catalog()); if (req.method === 'POST') return json(201,await createSinglePlayerGame(service, await input(req, LIMIT))); }
     const [id, action, ...rest] = parts;
+    if (action === 'preview-url' && !rest.length && req.method === 'GET') {
+      const localPreviewUrl = options.localPreviewUrl;
+      return json(200, { url: localPreviewUrl && canUseIsolatedPreview(await service.get(id)) ? localPreviewUrl(id) : null });
+    }
     if (parts.length === 1) { if (req.method === 'GET') return json(200,await service.get(id)); if (req.method === 'DELETE') return json(200,await service.delete(id)); }
     if (action === 'trailer' && !rest.length && req.method==='GET')return json(200,await service.trailer(id));
     if (action === 'handoff' && !rest.length && req.method==='GET')return json(200,await service.handoff(id));
@@ -1749,6 +1764,11 @@ export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: U
     }
     if (action === 'play' && req.method === 'GET') {
       const entry=!rest.length||(rest.length===1&&rest[0]==='index.html');
+      if (options.isolatedPreview && !canUseIsolatedPreview(await service.get(id))) return json(404, { error: 'Game preview unavailable' });
+      if (entry && req.headers?.['sec-fetch-dest'] === 'document' && options.localPreviewUrl && canUseIsolatedPreview(await service.get(id))) {
+        res.writeHead(302, { Location: options.localPreviewUrl(id, url.search), 'Cache-Control': 'no-store' }).end();
+        return true;
+      }
       if(entry&&!url.searchParams.has('room')&&(await service.get(id)).multiplayer){
         const target=new URL(url);target.searchParams.set('room',randomUUID().replaceAll('-','').slice(0,8));
         res.writeHead(302,{'Location':target.pathname+target.search,'Cache-Control':'no-store','Access-Control-Allow-Origin':'*'});res.end();return true;
@@ -1793,12 +1813,15 @@ export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: U
       }
       const origin = new URL(url); if (req.headers?.host) origin.host = req.headers.host;
       const encodedId = encodeURIComponent(id);
-      const assetOrigins = `${origin.origin}/api/assets/ ${origin.origin}/motion-api/assets/`;
+      const assetOrigins = options.isolatedPreview ? '' : `${origin.origin}/api/assets/ ${origin.origin}/motion-api/assets/`;
       const playOrigins = `${origin.origin}/api/games/${encodedId}/play/ ${origin.origin}/motion-api/games/${encodedId}/play/`;
-      const sockets = ['/api/games', '/motion-api/games'].map(prefix => `${origin.protocol === 'https:' ? 'wss:' : 'ws:'}//${origin.host}${prefix}/${id}/rooms/`).join(' ');
+      const sockets = options.isolatedPreview ? '' : ['/api/games', '/motion-api/games'].map(prefix => `${origin.protocol === 'https:' ? 'wss:' : 'ws:'}//${origin.host}${prefix}/${id}/rooms/`).join(' ');
       const executable = /^(?:text\/html|image\/svg\+xml)/.test(file.mime);
-      const csp = `sandbox allow-scripts allow-forms allow-pointer-lock allow-popups allow-modals; default-src 'self' data: blob: ${playOrigins} ${assetOrigins}; connect-src 'self' blob: data: ${playOrigins} ${assetOrigins} ${sockets} ${gameCdnOrigins}; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${playOrigins} ${gameCdnOrigins}; style-src 'self' 'unsafe-inline' ${playOrigins}; form-action 'none'; worker-src 'none'`;
-      res.writeHead(200, { 'Access-Control-Allow-Origin':'*', 'Content-Type':file.mime, 'Content-Length':payload.length, 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', ...(executable ? { 'Content-Security-Policy': csp } : {}) }); res.end(payload); return true;
+      const sandbox = options.isolatedPreview ? ' allow-same-origin' : '';
+      const isolation = options.isolatedPreview ? "; object-src 'none'; base-uri 'none'" : '';
+      const csp = `sandbox allow-scripts allow-forms allow-pointer-lock allow-popups allow-modals${sandbox}; default-src 'self' data: blob: ${playOrigins} ${assetOrigins}; connect-src 'self' blob: data: ${playOrigins} ${assetOrigins} ${sockets} ${gameCdnOrigins}; script-src 'self' 'unsafe-inline' 'unsafe-eval' ${playOrigins} ${gameCdnOrigins}; style-src 'self' 'unsafe-inline' ${playOrigins}; form-action 'none'; worker-src 'none'${isolation}`;
+      const originHeaders = options.isolatedPreview ? { 'Origin-Agent-Cluster': '?1', 'Referrer-Policy': 'no-referrer' } : { 'Access-Control-Allow-Origin': '*' };
+      res.writeHead(200, { ...originHeaders, 'Content-Type':file.mime, 'Content-Length':payload.length, 'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff', ...(executable ? { 'Content-Security-Policy': csp } : {}) }); res.end(payload); return true;
     }
     if (parts.length === 2 && req.method === 'POST') {
       if (action === 'capture-cover') return json(200,await service.captureCover(id,await input(req, LIMIT)));
