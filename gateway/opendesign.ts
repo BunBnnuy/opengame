@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Model } from '../shared/gateway.ts';
-import { isSfxModelText } from '../shared/audio-kind.ts';
+import { isSfxModel } from '../shared/audio-kind.ts';
 import { openDesignImageReferenceCap } from '../shared/opendesign-models.ts';
 import { resolveGenerationParameters } from '../shared/generation-options.ts';
 import { apiJson, publicProviderFetch, ProviderError, retryRead, type Fetcher } from './network.ts';
@@ -123,7 +123,7 @@ export const opendesign: ProviderAdapter = {
     const api = ctx.baseUrl + '/api/v1/media';
     const audio = job.modality === 'audio';
     const speech = audio && job.model.mode === 'text-to-speech';
-    const soundEffects = audio && !speech && isSfxModelText(job.model.modelId);
+    const soundEffects = audio && !speech && isSfxModel(job.model);
     let remoteId = job.remoteId;
     if (!remoteId) {
       const parameters = resolveGenerationParameters(job.model, job.parameters, !!ctx.references?.length);

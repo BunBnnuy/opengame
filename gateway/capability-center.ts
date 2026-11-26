@@ -714,9 +714,10 @@ export async function capabilityRun(
         references,
         conversationId: args.conversationId,
       });
+      const normalizedModel = typeof args.model === 'string' && args.model.trim() ? args.model.trim() : undefined;
       const inputHash = assetHash({
         capabilityId: cap.id,
-        model: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : null,
+        ...(normalizedModel ? { model: normalizedModel } : {}),
         prompt: rawPrompt,
         options,
         parameters: args.parameters ?? {},
@@ -846,6 +847,7 @@ export async function capabilityRun(
             } satisfies ScriptReceipt);
             return { asset, version, replayed: false };
           });
+          await output.onCommitted?.().catch(() => {});
           const result: ScriptExecutionResult = {
             capabilityId: cap.id,
             executorKind: 'script',

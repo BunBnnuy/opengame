@@ -1,5 +1,5 @@
 import type { Model, Modality } from './gateway.ts';
-import { isSfxModelText } from './audio-kind.ts';
+import { isSfxModel } from './audio-kind.ts';
 import type { ParameterTier, StandardParameterKey } from '../packages/multimodal-models/src/schema.ts';
 import {
   classifyParameterTier,
@@ -381,7 +381,7 @@ export function generationOptions(model: Model, hasInputImage = false): Generati
     number('duration_seconds', 'Duration (seconds)', undefined, 0.5, 22, 0.5),
     toggle('loop', 'Seamless loop'),
   ];
-  if (isOpenDesignMedia(model) && model.modality === 'audio' && isSfxModelText(model.modelId)) fields = [
+  if (isOpenDesignMedia(model) && model.modality === 'audio' && isSfxModel(model)) fields = [
     number('duration_seconds', 'Duration (seconds)', undefined, 0.5, 30, 0.5),
     toggle('loop', 'Seamless loop'),
     number('prompt_influence', 'Prompt influence', 0.3, 0, 1, 0.05),
@@ -431,7 +431,7 @@ export function generationOptions(model: Model, hasInputImage = false): Generati
   if (cloudSpeech(model)) { const voices = checkedVoices(model); fields = [voices ? { key: 'voice', label: 'Speech voice', kind: 'choice', choices: voices, default: voices[0].value, allowCustom: true } : text('voice', 'Voice ID', true)]; }
   // The connector's `audio music --duration` takes whole seconds; music models publish no duration range.
   // Dedicated sound-effects models (e.g. elevenlabs-sound-v3) use /audio/sound-effects with duration_seconds/loop/prompt_influence instead.
-  if (model.provider === 'account' && model.modality === 'audio' && model.mode === 'text-to-audio' && !isSfxModelText(model.modelId)) {
+  if (model.provider === 'account' && model.modality === 'audio' && model.mode === 'text-to-audio' && !isSfxModel(model)) {
     fields = [number('duration', 'Duration (seconds)', undefined, 1)];
   }
   return fields ? enrichGenerationOptionsWithSSOT(model.modality, { delivery: 'provider', fields }) : undefined;

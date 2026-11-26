@@ -876,6 +876,8 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'openmotion-3d-'));
   const cleanup = async () => {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  };
+  const onCommitted = async () => {
     await rm(checkpointPath, { force: true }).catch(() => {});
   };
   try {
@@ -894,6 +896,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
       sourcePath: finalGlb.file,
       name: ctx.prompt.trim() ? ctx.prompt.trim().slice(0, 80) : `3D Asset (${effectiveOp})`,
       cleanup,
+      onCommitted,
       result: {
         provider: config.provider,
         model: modelId,
@@ -1160,6 +1163,8 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'openmotion-world-'));
   const cleanup = async () => {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  };
+  const onCommitted = async () => {
     await rm(checkpointPath, { force: true }).catch(() => {});
   };
   try {
@@ -1187,6 +1192,7 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
         sourcePath: finalGlb.file,
         name: ctx.prompt.trim() ? ctx.prompt.trim().slice(0, 80) : `3D World (${operation})`,
         cleanup,
+        onCommitted,
         result: {
           provider: config.provider,
           model: modelId,
@@ -1216,6 +1222,7 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
         sourcePath: mediaPath,
         name: ctx.prompt.trim() ? ctx.prompt.trim().slice(0, 80) : `3D World (${operation})`,
         cleanup,
+        onCommitted,
         result: {
           provider: config.provider,
           model: modelId,

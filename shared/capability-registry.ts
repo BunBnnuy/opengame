@@ -1,5 +1,5 @@
 import type { Modality, Model } from './gateway.ts';
-import { isSfxModelText } from './audio-kind.ts';
+import { isSfxModel } from './audio-kind.ts';
 import { modelCapabilities } from './model-capabilities.ts';
 
 export type CapabilityModality = Modality | '3d';
@@ -941,11 +941,11 @@ export function capabilitySupportsModel(capability: CapabilityDefinition, model:
     return capability.id === 'sound-effects'
       && model.modality === 'audio'
       && model.mode === 'text-to-audio'
-      && isSfxModelText(`${model.modelId} ${model.label}`);
+      && isSfxModel(model);
   }
   if (capability.executor.kind === 'model') {
     if (capability.executor.mode && model.mode !== capability.executor.mode) return false;
-    if (capability.id === 'music' && isSfxModelText(`${model.modelId} ${model.label}`)) return false;
+    if (capability.id === 'music' && isSfxModel(model)) return false;
     if (capability.input.minReferences > 0) {
       return Boolean(model.supportsImageReference || (model.maxInputImages ?? 0) > 0);
     }

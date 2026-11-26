@@ -18,6 +18,7 @@ export type CapabilityScriptOutput = {
   sourcePath: string;
   name?: string;
   cleanup?: () => Promise<void>;
+  onCommitted?: () => Promise<void>;
   result?: Record<string, unknown>;
 };
 

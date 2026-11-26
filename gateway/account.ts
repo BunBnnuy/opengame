@@ -13,7 +13,7 @@ import { readSettings, writeSettings } from './settings-storage.ts';
 import { planMediaEntitlement } from './account-media.ts';
 import { registeredProvider } from '../shared/provider-registry.ts';
 import { defaultVideoAudioEnabled, resolveGenerationParameters } from '../shared/generation-options.ts';
-import { isSfxModelText } from '../shared/audio-kind.ts';
+import { isSfxModel } from '../shared/audio-kind.ts';
 import { apiJson, ProviderError, retryRead, type Fetcher } from './network.ts';
 import { cloudImageParameters, mediaSubmitHeaders, productionApi, uploadInputs } from './opendesign.ts';
 import type { ProviderContext } from './providers.ts';
@@ -961,7 +961,7 @@ export class OpenDesignAccount {
     const kind = job.modality, params = resolveGenerationParameters(job.model, job.parameters, !!reference || references.length > 0);
     if (job.providerOrigin !== await this.identity() || (await this.summary()).state !== 'signed-in') throw new Error(jobMessages.accountChangedBeforeSubmit);
     const music = kind === 'audio' && job.model.mode === 'text-to-audio';
-    const soundEffects = music && isSfxModelText(job.model.modelId);
+    const soundEffects = music && isSfxModel(job.model);
     if ((reference || references.length) && kind !== 'image' && kind !== 'video') throw new Error('Account reference images are supported for image editing and video first frames only');
     const allowed = kind === 'image'
       ? ['aspect_ratio', 'resolution', 'quality', 'size', 'background']
@@ -1056,14 +1056,14 @@ export class OpenDesignAccount {
     return body ?? {};
   }
   private async submitSoundEffect(job: GenerationJob, parameters: Record<string, unknown>, signal: AbortSignal) {
-    const profile = await this.profile();
-    if (!signedInProfile(profile)) throw new Error(requestMessages.unauthorized);
-    const fetcher = this.options.fetcher ?? fetch, api = productionApi + '/api/v1/media';
-    const headers = { Authorization: `Bearer ${profile!.controlKey}`, 'Content-Type': 'application/json' };
+    const access = await this.controlAccess();
+    if (!access) throw new Error(requestMessages.unauthorized);
+    const fetcher = this.options.fetcher ?? fetch, api = access.baseUrl + '/api/v1/media';
+    const headers = { Authorization: `Bearer ${access.key}`, 'Content-Type': 'application/json' };
     let response: Response;
     try {
       response = await fetcher(api + '/audio/sound-effects', {
-        method: 'POST', headers: { ...headers, ...mediaSubmitHeaders(productionApi, job.id) }, redirect: 'error', signal,
+        method: 'POST', headers: { ...headers, ...mediaSubmitHeaders(access.baseUrl, job.id) }, redirect: 'error', signal,
         body: JSON.stringify({ model: job.model.modelId, parameters: { ...parameters, text: job.prompt } }),
       });
     } catch (error) { if (signal.aborted) throw error; throw new Error(jobMessages.connection); }
@@ -1078,12 +1078,12 @@ export class OpenDesignAccount {
     progress: (phase: string, id?: string, download?: DownloadProgress) => Promise<void>) {
     const read = async () => {
       if (job.providerOrigin !== await this.identity()) throw new Error(jobMessages.accountChangedAfterSubmit);
-      const profile = await this.profile();
-      if (!signedInProfile(profile)) throw new Error(jobMessages.resultUnauthorized);
+      const access = await this.controlAccess();
+      if (!access) throw new Error(jobMessages.resultUnauthorized);
       try {
         const task = await retryRead(() => apiJson(this.options.fetcher ?? fetch,
-          `${productionApi}/api/v1/media/audio/tasks/${encodeURIComponent(taskId)}`,
-          { headers: { Authorization: `Bearer ${profile!.controlKey}` }, signal }, { timeoutMs: 15_000, maxBytes: 1024 * 1024 }), signal, 3);
+          `${access.baseUrl}/api/v1/media/audio/tasks/${encodeURIComponent(taskId)}`,
+          { headers: { Authorization: `Bearer ${access.key}` }, signal }, { timeoutMs: 15_000, maxBytes: 1024 * 1024 }), signal, 3);
         if (job.providerOrigin !== await this.identity()) throw new Error(jobMessages.accountChangedAfterSubmit);
         if (task.task_id !== taskId || task.model && task.model !== job.model.modelId) throw new Error(jobMessages.resultUnreadable);
         return task;

@@ -1369,12 +1369,12 @@ test('3d-asset capability gates honestly on AMR 3d_generations and executes Trip
       );
       assert.equal(submitted3dTasks.length, beforeMismatch);
 
-      // Any OpenDesign audio model matching isSfxModelText exposes duration_seconds, loop, and prompt_influence.
+      // Any OpenDesign audio model matching isSfxModel (by modelId or label) exposes duration_seconds, loop, and prompt_influence.
       const customSfxOpts = generationOptions({
-        id: 'opendesign:custom-sfx-v2',
+        id: 'opendesign:custom-audio-v2',
         provider: 'opendesign',
-        modelId: 'custom-sfx-v2',
-        label: 'Custom SFX v2',
+        modelId: 'custom-audio-v2',
+        label: 'Custom Foley SFX v2',
         modality: 'audio',
         mode: 'text-to-audio',
         source: 'discovered',

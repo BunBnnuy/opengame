@@ -1,6 +1,6 @@
 import type { LibraryGeneration } from './asset-library.ts';
 import type { GenerationOptions } from './generation-options.ts';
-import { isSfxModelText } from './audio-kind.ts';
+import { isSfxModel } from './audio-kind.ts';
 import { openDesignImageReferenceCap } from './opendesign-models.ts';
 /** Public contract shared by the model gateway, MCP and Studio. Never contains credentials. */
 export const modalities = ['image', 'video', 'audio'] as const;
@@ -85,7 +85,7 @@ export function modelReferenceLimit(model: Model): number {
 export function accountResumableMedia(job: GenerationJob): boolean {
   return job.model.provider === 'account' && (
     job.modality === 'image'
-    || (job.modality === 'audio' && job.model.mode === 'text-to-audio' && isSfxModelText(job.model.modelId))
+    || (job.modality === 'audio' && job.model.mode === 'text-to-audio' && isSfxModel(job.model))
   );
 }
 /** Local eligibility; the service additionally rechecks project, origin and credentials. */
