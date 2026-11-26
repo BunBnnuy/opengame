@@ -2132,8 +2132,10 @@ export function ArtifactBrowserPane({
   const toggleGameReaction = useCallback((value: 1 | -1) => {
     if (communityReactionId) {
       // Merge into what is stored now, so another tab's likes are never overwritten by this tab's copy.
-      const stored = readCommunityReactions();
-      const next = { ...stored, [communityReactionId]: stored[communityReactionId] === value ? 0 as const : value };
+      // Toggle from what the viewer sees; if storage is blocked, the in-memory choices still win.
+      const base = { ...communityReactions, ...readCommunityReactions() };
+      const current = communityReactions[communityReactionId] ?? base[communityReactionId] ?? 0;
+      const next = { ...base, [communityReactionId]: current === value ? 0 as const : value };
       writeCommunityReactions(next);
       setCommunityReactions(next);
       return;
@@ -2152,7 +2154,7 @@ export function ArtifactBrowserPane({
         rest.delete(gameId);
         return rest;
       }));
-  }, [activeGameProjectId, communityReactionId, gameReactions, likesSaving, loadGameReactions, onNotify, t]);
+  }, [activeGameProjectId, communityReactionId, communityReactions, gameReactions, likesSaving, loadGameReactions, onNotify, t]);
 
   const webColorScheme: BrowserColorScheme = webState?.colorScheme ?? 'auto';
   const webZoom = webState?.zoom ?? 1;
@@ -3849,7 +3851,7 @@ function readCommunityReactions(): Record<string, -1 | 0 | 1> {
     const parsed: unknown = JSON.parse(globalThis.localStorage?.getItem(COMMUNITY_REACTIONS_KEY) ?? '{}');
     if (!parsed || typeof parsed !== 'object') return {};
     const out: Record<string, -1 | 0 | 1> = {};
-    for (const [id, value] of Object.entries(parsed)) if (value === 1 || value === -1) out[id] = value;
+    for (const [id, value] of Object.entries(parsed)) if (value === 1 || value === -1 || value === 0) out[id] = value;
     return out;
   } catch {
     return {};
