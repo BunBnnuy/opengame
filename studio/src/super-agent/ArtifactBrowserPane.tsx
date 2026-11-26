@@ -411,7 +411,24 @@ function ProjectPreviewCodeView({
   onBackgroundLoadingChangeRef.current = onBackgroundLoadingChange;
 
   const hasFrameSource = mode === 'preview' && Boolean(previewUrl || srcDoc);
-  const frameLoaded = hasFrameSource && loadedFrameIdentity === frameIdentity;
+  const [startup, setStartup] = useState<{ frame: string; state: 'loading' | 'ready' | 'failed' } | null>(null);
+  const startupState = startup?.frame === frameIdentity ? startup.state : undefined;
+  useEffect(() => {
+    if (!hasFrameSource || !previewUrl.startsWith('/motion-api/games/') || !iframeRef) return;
+    const onStartup = (event: MessageEvent) => {
+      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow || event.data?.type !== 'opengame:startup') return;
+      const state = event.data.state;
+      if (state === 'loading' || state === 'ready' || state === 'failed') setStartup({ frame: frameIdentity, state });
+    };
+    window.addEventListener('message', onStartup);
+    return () => window.removeEventListener('message', onStartup);
+  }, [hasFrameSource, frameIdentity, iframeRef, previewUrl]);
+  useEffect(() => {
+    if (startupState !== 'loading') return;
+    const timer = window.setTimeout(() => setStartup({ frame: frameIdentity, state: 'failed' }), 120_000);
+    return () => window.clearTimeout(timer);
+  }, [frameIdentity, startupState]);
+  const frameLoaded = hasFrameSource && loadedFrameIdentity === frameIdentity && startupState !== 'loading' && startupState !== 'failed';
   const frameRevealTimedOut = hasFrameSource && revealedFrameIdentity === frameIdentity;
 
   useEffect(() => {
@@ -625,11 +642,21 @@ function ProjectPreviewCodeView({
           <div
             className="om-sa-frame-skeleton"
             data-game-loading={loadingBrand || undefined}
+            data-game-failed={startupState === 'failed' || undefined}
             role={loadingBrand ? 'status' : undefined}
             aria-label={loadingBrand ? t('Loading game…') : undefined}
             aria-hidden={loadingBrand ? undefined : true}
           >
-            {loadingBrand ? (
+            {startupState === 'failed' ? (
+              <>
+                <span>{t('This game could not be loaded.')}</span>
+                <Button variant="secondary" onClick={() => {
+                  setStartup(null);
+                  setLoadedFrameIdentity(null);
+                  if (iframeRef?.current) iframeRef.current.src = previewUrl;
+                }}>{t('Retry')}</Button>
+              </>
+            ) : loadingBrand ? (
               <OpenDesignLoadingMark height={26} />
             ) : (
               <Skeleton style={{ width: '100%', height: '100%' }} />
@@ -1090,7 +1117,7 @@ function GameProjectArtifactView({
     if (bundledBlobUrl) return bundledBlobUrl;
     if (projectId) {
       const presentedParam = artifact.presentedAt ? `&p=${artifact.presentedAt}` : '';
-      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}`;
+      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}&gameStartup=1`;
     }
     return artifact.url || '';
   }, [bundledBlobUrl, projectId, artifact.url, artifact.revision, artifact.presentedAt, reloadKey]);

@@ -1582,7 +1582,8 @@ server.listen(port, '127.0.0.1', () => {
   async staticFile(id: string, relative: string) {
     if (relative.toLowerCase() === 'game.json' || relative.toLowerCase()==='trailer/job.json' || isPublishRecord(relative)) throw new GameError('Private game metadata', 404);
     const card = await this.locateCard(id);
-    const root = relative.startsWith('trailer/') ? await this.trailerStorage(id) : card.dir;
+    const root = relative.startsWith('trailer/') ? await this.trailerStorage(id)
+      : card.source === 'template' && relative === 'index.html' ? await this.hosted.directory(id, card.dir) : card.dir;
     let file: string;
     try { file = await safeFile(root, relative); }
     catch (error) {
@@ -1743,7 +1744,34 @@ export async function gameHttp(req: IncomingMessage, res: ServerResponse, url: U
         const target=new URL(url);target.searchParams.set('room',randomUUID().replaceAll('-','').slice(0,8));
         res.writeHead(302,{'Location':target.pathname+target.search,'Cache-Control':'no-store','Access-Control-Allow-Origin':'*'});res.end();return true;
       }
-      const file = await service.staticFile(id,rest.length?rest.join('/'):'index.html');
+      const studioEntry = entry && url.searchParams.get('gameStartup') === '1';
+      let file;
+      try {
+        file = await service.staticFile(id,rest.length?rest.join('/'):'index.html');
+      } catch (error) {
+        if (!studioEntry) throw error;
+        res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; sandbox allow-scripts" });
+        res.end(`<script>parent.postMessage({type:'opengame:startup',state:'failed'}, '*')</script>`);
+        return true;
+      }
+      if (studioEntry && file.data.includes('id="GameCanvas"') && file.data.includes('cocos-js')) {
+        const startup = `<script>(() => {
+          const report = state => parent.postMessage({type:'opengame:startup',state}, '*');
+          const startupError = () => report('failed');
+          addEventListener('error', startupError);
+          addEventListener('unhandledrejection', startupError);
+          report('loading');
+          const waitForGameScene = setInterval(() => {
+            if (!window.cc?.director?.getScene?.()) return;
+            clearInterval(waitForGameScene);
+            removeEventListener('error', startupError);
+            removeEventListener('unhandledrejection', startupError);
+            requestAnimationFrame(() => requestAnimationFrame(() => report('ready')));
+          }, 100);
+          addEventListener('pagehide', () => clearInterval(waitForGameScene), {once:true});
+        })()</script>`;
+        file.data = Buffer.from(file.data.toString('utf8').replace(/<head\b[^>]*>/i, head => head + startup));
+      }
       const bridgeToken = url.searchParams.get('omBridge');
       const payload = entry && file.mime.startsWith('text/html') && isValidPreviewBridgeToken(bridgeToken)
         ? injectPreviewBridgeHtml(file.data, bridgeToken)

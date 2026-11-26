@@ -43,10 +43,12 @@ test('shallow source checkout fetches only the selected LFS game and reuses it o
   assert.equal((await studio.catalog()).games.length, 2);
   assert.equal((await studio.staticFile('selected', 'cover.webp')).data.toString(), 'poster');
   assert.match(await asset('selected'), pointer);
-  await assert.rejects(studio.staticFile('selected', 'asset.bin'), /Could not fetch selected/);
+  await assert.rejects(studio.staticFile('selected', 'index.html'), /Could not fetch selected/);
   await rename(source + '-offline', source);
-  const [file, draft] = await Promise.all([studio.staticFile('selected', 'asset.bin'), studio.remix('selected')]);
-  assert.equal(file.data.toString(), 'selected bytes');
+  const page = await studio.staticFile('selected', 'index.html');
+  assert.equal(page.data.toString(), '<p>Game</p>');
+  assert.equal(await asset('selected'), 'selected bytes');
+  const draft = await studio.remix('selected');
   assert.equal((await studio.staticFile(draft.game.id, 'asset.bin')).data.toString(), 'selected bytes');
   assert.match(await asset('other'), pointer);
   await rename(source, source + '-offline');
