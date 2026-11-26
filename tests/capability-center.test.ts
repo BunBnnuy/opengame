@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { assetHash } from '../gateway/asset-library.ts';
 import { fixture } from './fixtures.ts';
 import { execute, pluginRoot } from '../hyperframes.ts';
 import { verificationBinaries } from '../scripts/verify-export.ts';
@@ -1314,6 +1315,39 @@ test('3d-asset capability gates honestly on AMR 3d_generations and executes Trip
       assert.equal(submitted3dTasks[beforeRigWithPreset + 1].operation, 'retarget');
       assert.equal(rigPromoted.result.operation, 'rig_retarget');
       assert.equal(rigPromoted.result.animation, 'preset:walk');
+
+      // Explicit operation="rig_retarget" with default rigPreset="none" and no animation fails fast with 0 paid submissions.
+      const beforeInvalidRigRetarget = submitted3dTasks.length;
+      await assert.rejects(
+        api.call('openmotion_capability_run', {
+          action: 'run',
+          requestId: 'tripo-rig-retarget-missing-anim',
+          capabilityId: '3d-asset',
+          model: 'opendesign:tripo-3.0',
+          options: { operation: 'rig_retarget' },
+          prompt: 'Knight without animation',
+        }),
+        /rig_retarget requires an animation/,
+      );
+      assert.equal(submitted3dTasks.length, beforeInvalidRigRetarget);
+
+      // Corrupt checkpoint JSON must surface an error instead of silently restarting a paid 3D task.
+      const corruptReqId = 'tripo-corrupt-checkpoint-1';
+      const requestsDir = path.join(store.directory, 'assets', 'requests');
+      await mkdir(requestsDir, { recursive: true });
+      await writeFile(path.join(requestsDir, `spatial-3d-${assetHash(corruptReqId)}.json`), '{corrupt-json', 'utf8');
+      const beforeCorrupt = submitted3dTasks.length;
+      await assert.rejects(
+        api.call('openmotion_capability_run', {
+          action: 'run',
+          requestId: corruptReqId,
+          capabilityId: '3d-asset',
+          model: 'opendesign:tripo-3.0',
+          prompt: 'Should refuse to re-bill on corrupt checkpoint',
+        }),
+        /checkpoint is unreadable/i,
+      );
+      assert.equal(submitted3dTasks.length, beforeCorrupt);
 
       // Any OpenDesign audio model matching isSfxModelText exposes duration_seconds, loop, and prompt_influence.
       const customSfxOpts = generationOptions({

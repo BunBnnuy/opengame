@@ -81,13 +81,16 @@ export function modelReferenceLimit(model: Model): number {
   }
   return model.modality === 'video' ? Math.min(model.maxInputImages ?? 0, 1) : 0;
 }
+/** True when a direct account job's modality/model supports resuming an existing remote task. */
+export function accountResumableMedia(job: GenerationJob): boolean {
+  return job.model.provider === 'account' && (
+    job.modality === 'image'
+    || (job.modality === 'audio' && job.model.mode === 'text-to-audio' && isSfxModelText(job.model.modelId))
+  );
+}
 /** Local eligibility; the service additionally rechecks project, origin and credentials. */
 export function resumableJob(job: GenerationJob): boolean {
-  const accountDirectAudioSfx = job.model.provider === 'account'
-    && job.modality === 'audio'
-    && job.model.mode === 'text-to-audio'
-    && isSfxModelText(job.model.modelId);
-  return (job.model.provider === 'opendesign' || (job.model.provider === 'account' && (job.modality === 'image' || accountDirectAudioSfx)))
+  return (job.model.provider === 'opendesign' || accountResumableMedia(job))
     && typeof job.remoteId === 'string' && /^[a-zA-Z0-9_-]{1,180}$/.test(job.remoteId)
     && job.state === 'failed' && !job.savePending && !job.remoteTerminal
     && !legacyRemoteTerminal(job);

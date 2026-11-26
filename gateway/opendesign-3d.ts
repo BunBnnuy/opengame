@@ -235,15 +235,27 @@ function checkpointFileFor(store: WorkspaceStore, domain: '3d' | 'world', reques
 
 async function readCheckpoint(file: string): Promise<SpatialCheckpoint> {
   try {
-    return JSON.parse(await readFile(file, 'utf8')) as SpatialCheckpoint;
+    const parsed = JSON.parse(await readFile(file, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('Checkpoint JSON must be an object');
+    }
+    return parsed as SpatialCheckpoint;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
-    return {};
+    throw new Error(
+      `3D request checkpoint is unreadable (${file}): ${error instanceof Error ? error.message : String(error)}. Refusing to restart a potentially billed 3D task; inspect or remove the corrupt checkpoint before retrying.`,
+    );
   }
 }
 
 async function saveCheckpoint(file: string, data: SpatialCheckpoint): Promise<void> {
-  await atomicAssetJson(file, data).catch(() => {});
+  try {
+    await atomicAssetJson(file, data);
+  } catch (error) {
+    throw new Error(
+      `Failed to persist 3D request checkpoint (${file}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function tripoJson<T = any>(
@@ -649,6 +661,11 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
     effectiveOp = hasRetargetAnimation ? 'rig_retarget' : 'rig';
   } else if (effectiveOp === 'rig' && hasRetargetAnimation) {
     effectiveOp = 'rig_retarget';
+  }
+  if (effectiveOp === 'rig_retarget' && !hasRetargetAnimation) {
+    throw new Error(
+      '3d-asset operation=rig_retarget requires an animation (pass options.rigPreset such as mixamo-idle/mixamo-walk/mixamo-run/mixamo-slash, or parameters.animation / parameters.animations; use operation="rig" for skeleton-only rigging)',
+    );
   }
 
   const checkpointPath = checkpointFileFor(ctx.store, '3d', ctx.requestId);
