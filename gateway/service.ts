@@ -22,20 +22,14 @@ import { loadRegistry, toOpenMotionGenerationOptions } from '../packages/multimo
 import { audioAssetTitle, classifyAudioKind } from '../shared/audio-kind.ts';
 import { MAX_ASSET_BYTES } from '../shared/asset-limits.ts';
 import { rankSearchResults } from '../shared/fuzzy-search.ts';
-import { modelId, slug } from '../tracking/core.ts';
-import { validHostContext, type HostContext } from '../tracking/host.ts';
+import { type HostContext } from '../tracking/host.ts';
 import {
-  extractHttpStatus,
-  extractRequestedMediaParams,
   extractUpstreamErrorCode,
-  mediaGenerationError,
-  mediaGenerationErrorCategory,
   mediaGenerationModes,
   normalizeAccountPlan,
   normalizeCancelPhase,
   safeCapabilityId,
   type MediaGenerationAccountPlan,
-  type MediaGenerationAudioKind,
   type MediaGenerationCancelPhase,
   type MediaGenerationCancelSource,
   type MediaGenerationDestination,
@@ -45,73 +39,28 @@ import {
   type MediaGenerationMode,
   type MediaGenerationRejectionCategory,
   type MediaGenerationRejectionReason,
-  type MediaGenerationRouteChannel,
 } from '../tracking/tool-fields.ts';
+import {
+  clampMs,
+  classifyRejectionError,
+  createStageTimingTracker,
+  generationTrackingFields,
+  jobTrackingHost,
+  normalizeTrackingHost,
+  providerTrackingMeta,
+  recordMediaGenerationRejected,
+  recordMediaGenerationReplayed,
+  recordMediaGenerationRequested,
+  recordMediaGenerationResult,
+  recordMediaGenerationRetryRejected,
+  recordMediaGenerationRetryStarted,
+  recordMediaGenerationSubmitted,
+  resolveResultErrorFields,
+  type LiveTimings,
+} from './media-telemetry.ts';
 
-function providerTrackingMeta(model: Model) {
-  const provider_kind: 'builtin' | 'custom' | 'account' | 'agent' =
-    model.provider === 'account' ? 'account'
-      : model.provider === 'codex' ? 'agent'
-        : isGatewayProvider(model.provider) ? 'builtin' : 'custom';
-  const route_channel: MediaGenerationRouteChannel =
-    model.provider === 'account' ? 'amr_account'
-      : model.provider === 'opendesign' ? 'amr_opendesign'
-        : model.provider === 'codex' ? 'byok_agent'
-          : isGatewayProvider(model.provider) ? 'byok_builtin' : 'byok_custom';
-  const model_provider = provider_kind !== 'custom' && slug.test(model.provider) ? model.provider : undefined;
-  const model_id = provider_kind !== 'custom' && model.source !== 'custom' && modelId.test(model.modelId)
-    ? model.modelId : undefined;
-  const generation_mode = (mediaGenerationModes as readonly string[]).includes(model.mode)
-    ? model.mode as MediaGenerationMode : undefined;
-  let audio_kind: MediaGenerationAudioKind | undefined;
-  if (model.modality === 'audio') {
-    const rawKind = classifyAudioKind(model.id, model.mode, 'generated', `${model.modelId} ${model.label}`);
-    audio_kind = rawKind === 'speech' || rawKind === 'music' || rawKind === 'sfx' ? rawKind : 'other';
-  }
-  return {
-    provider_kind,
-    route_channel,
-    ...(model_provider ? { model_provider } : {}),
-    ...(model_id ? { model_id } : {}),
-    ...(generation_mode ? { generation_mode } : {}),
-    ...(audio_kind ? { audio_kind } : {}),
-  };
-}
-
-function generationTrackingFields(job: GenerationJob) {
-  const capability_id = safeCapabilityId(job.capabilityId ?? job.library?.capabilityId);
-  const paramImages = Array.isArray(job.parameters?.images) ? job.parameters.images.length : 0;
-  const reference_count = (job.references?.length ?? (job.reference ? 1 : 0)) + paramImages;
-  const destination: MediaGenerationDestination = job.library ? 'library' : 'project';
-  const is_edit = reference_count > 0 || Boolean(job.library?.parentVersionId);
-  const entry_surface: MediaGenerationEntrySurface = job.entrySurface ?? 'unknown';
-  const account_plan = job.model.provider === 'account' ? job.accountPlan : undefined;
-  return {
-    ...providerTrackingMeta(job.model),
-    ...(capability_id ? { capability_id } : {}),
-    entry_surface,
-    destination,
-    reference_count,
-    is_edit,
-    ...(account_plan ? { account_plan } : {}),
-    ...extractRequestedMediaParams(job.parameters),
-  };
-}
-function jobTrackingHost(job: GenerationJob): HostContext | undefined {
-  return validHostContext(job.trackingHost) ? job.trackingHost : undefined;
-}
-function clampMs(value: number): number {
-  return Math.min(86_400_000, Math.max(0, Math.round(value)));
-}
 type SubmitTrackingOptions = { entrySurface?: MediaGenerationEntrySurface };
 type CancelTrackingOptions = { source?: MediaGenerationCancelSource };
-type LiveTimings = {
-  uploadMs?: number;
-  remoteMs?: number;
-  downloadMs?: number;
-  saveMs?: number;
-  reconnectedCount?: number;
-};
 type ResultTelemetry = LiveTimings & {
   cause?: unknown;
   failurePhase?: MediaGenerationFailurePhase;
@@ -378,11 +327,11 @@ export class ModelGateway {
   private async saveResult(job: GenerationJob, details: ResultTelemetry = {}) {
     if (job.state === 'queued' || job.state === 'running') throw new Error('Expected a terminal generation job');
     const attemptStart = job.startedAt ?? job.attemptCreatedAt ?? job.createdAt;
-    const duration_ms = clampMs(job.updatedAt - attemptStart);
-    const queue_wait_ms = job.startedAt !== undefined
+    const durationMs = clampMs(job.updatedAt - attemptStart);
+    const queueWaitMs = job.startedAt !== undefined
       ? clampMs(job.startedAt - (job.attemptCreatedAt ?? job.createdAt)) : undefined;
-    const end_to_end_ms = clampMs(job.updatedAt - job.createdAt);
-    const failure_phase: MediaGenerationFailurePhase | undefined = job.state === 'completed'
+    const endToEndMs = clampMs(job.updatedAt - job.createdAt);
+    const failurePhase: MediaGenerationFailurePhase | undefined = job.state === 'completed'
       ? undefined
       : details.failurePhase
         ?? (job.state === 'cancelled' ? 'cancelled'
@@ -390,62 +339,76 @@ export class ModelGateway {
             : job.phase === 'save_unavailable' ? 'save_unavailable'
               : job.phase === 'save_failed' ? 'saving'
                 : 'submitting');
-    const errorSource = details.cause ?? job.error;
-    const error_code = job.state === 'completed' ? undefined : mediaGenerationError(errorSource, failure_phase ?? job.phase);
-    const http_status = job.state === 'completed' ? undefined : extractHttpStatus(errorSource);
+    const cause = details.cause ?? job.error;
     const baseFields = generationTrackingFields(job);
-    const error_category = error_code ? mediaGenerationErrorCategory(error_code, failure_phase, baseFields.route_channel) : undefined;
-    const upstream_error_code = job.state === 'completed' || baseFields.provider_kind === 'custom'
-      ? undefined
-      : extractUpstreamErrorCode(errorSource);
-    const previous_error_code = details.previousErrorCode ?? (job.attemptKind && job.attemptKind !== 'initial' ? job.lastErrorCode : undefined);
-    const previous_failure_phase = details.previousFailurePhase ?? (job.attemptKind && job.attemptKind !== 'initial' ? job.lastFailurePhase : undefined);
-    if (error_code) job.lastErrorCode = error_code;
-    if (failure_phase) job.lastFailurePhase = failure_phase;
+    const { errorCode } = resolveResultErrorFields({
+      jobState: job.state,
+      cause,
+      failurePhase,
+      fallbackPhase: job.phase,
+      providerKind: baseFields.provider_kind,
+      routeChannel: baseFields.route_channel,
+    });
+    const previousErrorCode = details.previousErrorCode ?? (job.attemptKind && job.attemptKind !== 'initial' ? job.lastErrorCode : undefined);
+    const previousFailurePhase = details.previousFailurePhase ?? (job.attemptKind && job.attemptKind !== 'initial' ? job.lastFailurePhase : undefined);
+    if (errorCode) job.lastErrorCode = errorCode;
+    if (failurePhase) job.lastFailurePhase = failurePhase;
     await this.saveJob(job);
-    const total_output_bytes = details.totalOutputBytes !== undefined
-      ? Math.min(536_870_912, Math.max(0, Math.round(details.totalOutputBytes)))
+    const totalOutputBytes = details.totalOutputBytes !== undefined
+      ? details.totalOutputBytes
       : job.state === 'completed' && job.assets.length
-        ? Math.min(536_870_912, job.assets.reduce((sum, asset) => sum + Math.max(0, Math.round(asset.bytes || 0)), 0))
+        ? job.assets.reduce((sum, asset) => sum + Math.max(0, Math.round(asset.bytes || 0)), 0)
         : undefined;
-    this.options.tracking?.track('media_generation_result', {
-      modality: job.modality, job_id: job.id, job_state: job.state,
-      asset_count: Math.max(job.assets.length, job.libraryAssets?.length ?? 0),
-      ...baseFields,
-      ...(job.telemetryRequestId ? { request_id: job.telemetryRequestId } : {}),
-      ...(job.attemptId ? { attempt_id: job.attemptId } : {}),
-      ...(job.attemptCount ? { attempt_number: job.attemptCount } : {}),
-      duration_ms,
-      ...(queue_wait_ms !== undefined ? { queue_wait_ms } : {}),
-      end_to_end_ms,
-      ...(details.uploadMs !== undefined ? { upload_ms: clampMs(details.uploadMs) } : {}),
-      ...(details.remoteMs !== undefined ? { remote_ms: clampMs(details.remoteMs) } : {}),
-      ...(details.downloadMs !== undefined ? { download_ms: clampMs(details.downloadMs) } : {}),
-      ...(details.saveMs !== undefined ? { save_ms: clampMs(details.saveMs) } : {}),
-      ...(details.cancelWaitMs !== undefined ? { cancel_wait_ms: clampMs(details.cancelWaitMs) } : {}),
-      attempt_kind: job.attemptKind ?? 'initial',
-      ...(typeof job.remoteTerminal === 'boolean' ? { remote_terminal: job.remoteTerminal } : {}),
-      has_remote_id: Boolean(job.remoteId),
-      ...(job.state === 'failed' ? { is_resumable: resumableJob(job) } : {}),
-      ...(job.state !== 'completed' ? { save_pending: Boolean(job.savePending) } : {}),
-      ...(details.reconnectedCount ? { reconnected_count: Math.min(86_400_000, details.reconnectedCount) } : {}),
-      ...(total_output_bytes !== undefined && job.state === 'completed' ? { total_output_bytes } : {}),
-      ...(failure_phase ? { failure_phase } : {}),
-      ...(details.phaseBeforeCancel ? { phase_before_cancel: details.phaseBeforeCancel } : {}),
-      ...(details.lastActivePhase ? { last_active_phase: details.lastActivePhase } : {}),
-      ...(details.cancelSource ? { cancel_source: details.cancelSource } : {}),
-      ...(http_status !== undefined ? { http_status } : {}),
-      ...(upstream_error_code ? { upstream_error_code } : {}),
-      ...(error_code ? { error_code } : {}),
-      ...(error_category ? { error_category } : {}),
-      ...(previous_error_code ? { previous_error_code } : {}),
-      ...(previous_failure_phase ? { previous_failure_phase } : {}),
-    }, undefined, 'worker', jobTrackingHost(job));
+    recordMediaGenerationResult(this.options.tracking, {
+      modality: job.modality,
+      executorKind: 'gateway',
+      providerKind: baseFields.provider_kind,
+      routeChannel: baseFields.route_channel,
+      modelProvider: baseFields.model_provider,
+      modelId: baseFields.model_id,
+      capabilityId: baseFields.capability_id,
+      entrySurface: baseFields.entry_surface,
+      destination: baseFields.destination,
+      generationMode: baseFields.generation_mode,
+      audioKind: baseFields.audio_kind,
+      referenceCount: baseFields.reference_count,
+      isEdit: baseFields.is_edit,
+      accountPlan: baseFields.account_plan,
+      parameters: job.parameters,
+      jobId: job.id,
+      requestId: job.telemetryRequestId,
+      attemptId: job.attemptId,
+      attemptNumber: job.attemptCount,
+      attemptKind: job.attemptKind ?? 'initial',
+      jobState: job.state,
+      assetCount: Math.max(job.assets.length, job.libraryAssets?.length ?? 0),
+      durationMs,
+      queueWaitMs,
+      endToEndMs,
+      uploadMs: details.uploadMs,
+      remoteMs: details.remoteMs,
+      downloadMs: details.downloadMs,
+      saveMs: details.saveMs,
+      cancelWaitMs: details.cancelWaitMs,
+      reconnectedCount: details.reconnectedCount,
+      remoteTerminal: typeof job.remoteTerminal === 'boolean' ? job.remoteTerminal : undefined,
+      hasRemoteId: Boolean(job.remoteId),
+      isResumable: job.state === 'failed' ? resumableJob(job) : undefined,
+      savePending: job.state !== 'completed' ? Boolean(job.savePending) : undefined,
+      totalOutputBytes,
+      failurePhase,
+      phaseBeforeCancel: details.phaseBeforeCancel,
+      lastActivePhase: details.lastActivePhase,
+      cancelSource: details.cancelSource,
+      cause,
+      previousErrorCode,
+      previousFailurePhase,
+    }, jobTrackingHost(job));
   }
   async submit(input: GenerateInput, host?: HostContext, meta?: SubmitTrackingOptions): Promise<GenerationJob> {
     if (!input || typeof input !== 'object') throw new Error('Generation input required');
     modality(input.modality);
-    const validHost = validHostContext(host) && host.host_agent !== 'unknown' ? host : undefined;
+    const validHost = normalizeTrackingHost(host);
     const requestedCap = safeCapabilityId(input.capabilityId ?? input.library?.capabilityId);
     const requestId = randomUUID();
     const entrySurface: MediaGenerationEntrySurface = meta?.entrySurface ?? 'unknown';
@@ -457,17 +420,18 @@ export class ModelGateway {
     const hasIdempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length > 0;
     const requestedMode = typeof input.mode === 'string' && (mediaGenerationModes as readonly string[]).includes(input.mode)
       ? input.mode as MediaGenerationMode : undefined;
-    this.options.tracking?.track('media_generation_requested', {
+    recordMediaGenerationRequested(this.options.tracking, {
       modality: input.modality,
-      request_id: requestId,
-      ...(requestedCap ? { capability_id: requestedCap } : {}),
-      entry_surface: entrySurface,
+      requestId,
+      executorKind: 'gateway',
+      capabilityId: requestedCap,
+      entrySurface,
       destination,
-      ...(requestedMode ? { generation_mode: requestedMode } : {}),
-      reference_count: rawRefCount,
-      is_edit: isEdit,
-      has_idempotency_key: hasIdempotencyKey,
-    }, undefined, 'worker', validHost);
+      generationMode: requestedMode,
+      referenceCount: rawRefCount,
+      isEdit,
+      hasIdempotencyKey,
+    }, validHost);
     let resolvedModel: Model | undefined;
     let resolvedAccountPlan: MediaGenerationAccountPlan | undefined;
     let rejection: { reason: MediaGenerationRejectionReason; category: MediaGenerationRejectionCategory } | undefined;
@@ -516,15 +480,28 @@ export class ModelGateway {
         const previous = input.idempotencyKey ? jobs.find(j => j.idempotencyKey === input.idempotencyKey && j.projectId === projectId) : undefined;
         if (previous) {
           if (previous.requestHash !== requestHash) failSubmit('IDEMPOTENCY_CONFLICT', 'client_validation', 'Idempotency key was already used for another request');
-          this.options.tracking?.track('media_generation_replayed', {
+          const prevFields = generationTrackingFields(previous);
+          recordMediaGenerationReplayed(this.options.tracking, {
             modality: previous.modality,
-            request_id: requestId,
-            job_id: previous.id,
-            existing_job_state: previous.state,
-            ...generationTrackingFields(previous),
+            executorKind: 'gateway',
+            providerKind: prevFields.provider_kind,
+            routeChannel: prevFields.route_channel,
+            modelProvider: prevFields.model_provider,
+            modelId: prevFields.model_id,
+            capabilityId: prevFields.capability_id,
             // Attribute the replay to the calling surface and host so per-surface funnels conserve requested = submitted + rejected + replayed.
-            entry_surface: entrySurface,
-          }, undefined, 'worker', validHost);
+            entrySurface,
+            destination: prevFields.destination,
+            generationMode: prevFields.generation_mode,
+            audioKind: prevFields.audio_kind,
+            referenceCount: prevFields.reference_count,
+            isEdit: prevFields.is_edit,
+            accountPlan: prevFields.account_plan,
+            parameters: previous.parameters,
+            requestId,
+            jobId: previous.id,
+            existingJobState: previous.state,
+          }, validHost);
           return previous;
         }
         const providerState = model ? status.providers.find(p => p.id === model.provider) : undefined;
@@ -620,12 +597,31 @@ export class ModelGateway {
             await writeFile(path.join(work, referenceFile(index, media.mimeType)), bytes, { flag: 'wx', mode: 0o600 });
           }
           await this.saveJob(job);
-          this.options.tracking?.track('media_generation_submitted', {
-            modality: job.modality, job_id: job.id,
-            request_id: requestId, attempt_id: attemptId, attempt_number: 1, attempt_kind: 'initial',
-            has_idempotency_key: hasIdempotencyKey, queue_depth: activeQueueDepth,
-            ...generationTrackingFields(job),
-          }, undefined, 'worker', jobTrackingHost(job));
+          const subFields = generationTrackingFields(job);
+          recordMediaGenerationSubmitted(this.options.tracking, {
+            modality: job.modality,
+            executorKind: 'gateway',
+            providerKind: subFields.provider_kind,
+            routeChannel: subFields.route_channel,
+            modelProvider: subFields.model_provider,
+            modelId: subFields.model_id,
+            capabilityId: subFields.capability_id,
+            entrySurface: subFields.entry_surface,
+            destination: subFields.destination,
+            generationMode: subFields.generation_mode,
+            audioKind: subFields.audio_kind,
+            referenceCount: subFields.reference_count,
+            isEdit: subFields.is_edit,
+            accountPlan: subFields.account_plan,
+            parameters: job.parameters,
+            requestId,
+            jobId: job.id,
+            attemptId,
+            attemptNumber: 1,
+            attemptKind: 'initial',
+            hasIdempotencyKey,
+            queueDepth: activeQueueDepth,
+          }, jobTrackingHost(job));
           return job;
         } catch (error) { await rm(work, { recursive: true, force: true }); throw error; }
       });
@@ -633,54 +629,111 @@ export class ModelGateway {
       const reason: MediaGenerationRejectionReason = rejection?.reason ?? 'PREFLIGHT_FAILED';
       const category: MediaGenerationRejectionCategory = rejection?.category ?? 'other';
       const modelMeta = resolvedModel ? providerTrackingMeta(resolvedModel) : undefined;
-      const paramMeta = input.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters)
-        ? extractRequestedMediaParams(input.parameters as Record<string, unknown>) : {};
-      this.options.tracking?.track('media_generation_rejected', {
+      recordMediaGenerationRejected(this.options.tracking, {
         modality: input.modality,
-        request_id: requestId,
-        has_idempotency_key: hasIdempotencyKey,
-        rejection_reason: reason,
-        rejection_category: category,
-        entry_surface: entrySurface,
+        executorKind: 'gateway',
+        requestId,
+        hasIdempotencyKey,
+        reason,
+        category,
+        entrySurface,
         destination,
-        ...(requestedCap ? { capability_id: requestedCap } : {}),
-        ...(requestedMode && !modelMeta?.generation_mode ? { generation_mode: requestedMode } : {}),
-        ...(modelMeta ?? {}),
-        ...paramMeta,
-        reference_count: rawRefCount,
-        is_edit: isEdit,
-        ...(resolvedModel?.provider === 'account' && resolvedAccountPlan ? { account_plan: resolvedAccountPlan } : {}),
-      }, undefined, 'worker', validHost);
+        capabilityId: requestedCap,
+        providerKind: modelMeta?.provider_kind,
+        routeChannel: modelMeta?.route_channel,
+        modelProvider: modelMeta?.model_provider,
+        modelId: modelMeta?.model_id,
+        generationMode: modelMeta?.generation_mode ?? requestedMode,
+        audioKind: modelMeta?.audio_kind,
+        referenceCount: rawRefCount,
+        isEdit,
+        accountPlan: resolvedModel?.provider === 'account' ? resolvedAccountPlan : undefined,
+        parameters: input.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters)
+          ? input.parameters as Record<string, unknown> : undefined,
+      }, validHost);
       throw error;
     }
   }
+  recordRetryRejection(job: GenerationJob, attemptKind: 'resume' | 'retry_save', error: unknown) {
+    const fields = generationTrackingFields(job);
+    const { reason, category } = classifyRejectionError(error);
+    recordMediaGenerationRetryRejected(this.options.tracking, {
+      modality: job.modality,
+      executorKind: 'gateway',
+      providerKind: fields.provider_kind,
+      routeChannel: fields.route_channel,
+      modelProvider: fields.model_provider,
+      modelId: fields.model_id,
+      capabilityId: fields.capability_id,
+      entrySurface: fields.entry_surface,
+      destination: fields.destination,
+      generationMode: fields.generation_mode,
+      audioKind: fields.audio_kind,
+      referenceCount: fields.reference_count,
+      isEdit: fields.is_edit,
+      accountPlan: fields.account_plan,
+      parameters: job.parameters,
+      jobId: job.id,
+      requestId: job.telemetryRequestId,
+      attemptKind,
+      reason,
+      category,
+    }, jobTrackingHost(job));
+  }
   async resume(id: unknown, requestId: unknown) {
-    if (typeof requestId !== 'string' || !/^[\w-]{1,100}$/.test(requestId)) throw new Error('A stable requestId is required');
+    if (typeof requestId !== 'string' || !/^[\w-]{1,100}$/.test(requestId)) {
+      const err = new Error('A stable requestId is required');
+      const job = await this.getJob(id).catch(() => undefined);
+      if (job) this.recordRetryRejection(job, 'resume', err);
+      throw err;
+    }
     return this.store.lock(async () => {
       const job = await this.getJob(id);
-      if (!(job.model.provider === 'opendesign' || accountResumableMedia(job)) || !job.remoteId || !/^[a-zA-Z0-9_-]{1,180}$/.test(job.remoteId)) throw new Error('Only an existing Cloud or direct account image/sound-effects task can be resumed');
-      if (['queued', 'running', 'completed'].includes(job.state)) return job;
-      if (!resumableJob(job)) throw new Error(job.savePending ? 'Use retry_save for retained local outputs' : 'This task cannot be resumed');
-      if (job.projectId && !this.store.projectCatalog().projects.some(project => project.id === job.projectId)) throw new Error('Project not found');
-      if (job.model.provider === 'account') {
-        if (job.providerOrigin !== await this.account.identity()) throw new Error('Account changed; the original task was not resumed');
-      } else if (job.providerOrigin !== await this.cloudOrigin()) throw new Error('Provider API origin changed; the original task was not resumed');
-      if (job.model.provider === 'opendesign' && !(await this.credential('opendesign')).key || !(await this.status()).providers.find(provider => provider.id === job.model.provider)?.available) throw new Error('Provider is no longer available');
-      if ((await this.listJobs()).filter(item => ['queued', 'running'].includes(item.state)).length >= 20) throw new Error('Generation queue is full (20 jobs)');
+      try {
+        if (!(job.model.provider === 'opendesign' || accountResumableMedia(job)) || !job.remoteId || !/^[a-zA-Z0-9_-]{1,180}$/.test(job.remoteId)) throw new Error('Only an existing Cloud or direct account image/sound-effects task can be resumed');
+        if (['queued', 'running', 'completed'].includes(job.state)) return job;
+        if (!resumableJob(job)) throw new Error(job.savePending ? 'Use retry_save for retained local outputs' : 'This task cannot be resumed');
+        if (job.projectId && !this.store.projectCatalog().projects.some(project => project.id === job.projectId)) throw new Error('Project not found');
+        if (job.model.provider === 'account') {
+          if (job.providerOrigin !== await this.account.identity()) throw new Error('Account changed; the original task was not resumed');
+        } else if (job.providerOrigin !== await this.cloudOrigin()) throw new Error('Provider API origin changed; the original task was not resumed');
+        if (job.model.provider === 'opendesign' && !(await this.credential('opendesign')).key || !(await this.status()).providers.find(provider => provider.id === job.model.provider)?.available) throw new Error('Provider is no longer available');
+        if ((await this.listJobs()).filter(item => ['queued', 'running'].includes(item.state)).length >= 20) throw new Error('Generation queue is full (20 jobs)');
+      } catch (error) {
+        this.recordRetryRejection(job, 'resume', error);
+        throw error;
+      }
       const now = Date.now();
       job.state = 'queued'; job.phase = 'resuming'; job.attemptKind = 'resume';
       job.attemptCount = (job.attemptCount ?? 1) + 1; job.attemptId = randomUUID(); job.attemptCreatedAt = now;
       delete job.startedAt; delete job.workerPid;
       job.updatedAt = now; delete job.error;
       await this.saveJob(job);
-      this.options.tracking?.track('media_generation_retry_started', {
-        modality: job.modality, job_id: job.id,
-        ...(job.telemetryRequestId ? { request_id: job.telemetryRequestId } : {}),
-        attempt_id: job.attemptId, attempt_number: job.attemptCount, attempt_kind: 'resume',
-        ...generationTrackingFields(job),
-        ...(job.lastErrorCode ? { previous_error_code: job.lastErrorCode } : {}),
-        ...(job.lastFailurePhase ? { previous_failure_phase: job.lastFailurePhase } : {}),
-      }, undefined, 'worker', jobTrackingHost(job));
+      const retryFields = generationTrackingFields(job);
+      recordMediaGenerationRetryStarted(this.options.tracking, {
+        modality: job.modality,
+        executorKind: 'gateway',
+        providerKind: retryFields.provider_kind,
+        routeChannel: retryFields.route_channel,
+        modelProvider: retryFields.model_provider,
+        modelId: retryFields.model_id,
+        capabilityId: retryFields.capability_id,
+        entrySurface: retryFields.entry_surface,
+        destination: retryFields.destination,
+        generationMode: retryFields.generation_mode,
+        audioKind: retryFields.audio_kind,
+        referenceCount: retryFields.reference_count,
+        isEdit: retryFields.is_edit,
+        accountPlan: retryFields.account_plan,
+        parameters: job.parameters,
+        jobId: job.id,
+        requestId: job.telemetryRequestId,
+        attemptId: job.attemptId,
+        attemptNumber: job.attemptCount,
+        attemptKind: 'resume',
+        previousErrorCode: job.lastErrorCode,
+        previousFailurePhase: job.lastFailurePhase,
+      }, jobTrackingHost(job));
       return job;
     });
   }
@@ -747,18 +800,28 @@ export class ModelGateway {
         await rm(snapshot.file, { force: true });
       }
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith('SAVE_NOT_AVAILABLE:')) throw error;
+      if (!(error instanceof Error) || !error.message.startsWith('SAVE_NOT_AVAILABLE:')) {
+        this.recordRetryRejection(original, 'retry_save', error);
+        throw error;
+      }
       return this.store.lock(async () => {
         const job = await this.getJob(id);
         if (['completed', 'queued', 'running'].includes(job.state)) return job;
         // Cancellation is final for this route: report that nothing was saved, but keep the job cancelled.
-        if (job.state === 'cancelled') throw error;
+        if (job.state === 'cancelled') {
+          this.recordRetryRejection(job, 'retry_save', error);
+          throw error;
+        }
         const alreadyFailed = job.state === 'failed';
         // Keep Cloud-terminal provenance before the error text is replaced.
         if (legacyRemoteTerminal(job)) job.remoteTerminal = true;
         job.state = 'failed'; job.phase = 'save_unavailable'; job.savePending = false; job.error = error.message; job.updatedAt = Date.now();
-        if (alreadyFailed) await this.saveJob(job);
-        else await this.saveResult(job, { cause: error, failurePhase: 'save_unavailable' });
+        if (alreadyFailed) {
+          await this.saveJob(job);
+          this.recordRetryRejection(job, 'retry_save', error);
+        } else {
+          await this.saveResult(job, { cause: error, failurePhase: 'save_unavailable' });
+        }
         throw error;
       });
     }
@@ -771,14 +834,31 @@ export class ModelGateway {
       delete job.startedAt; delete job.workerPid;
       job.updatedAt = now; delete job.error;
       await this.saveJob(job);
-      this.options.tracking?.track('media_generation_retry_started', {
-        modality: job.modality, job_id: job.id,
-        ...(job.telemetryRequestId ? { request_id: job.telemetryRequestId } : {}),
-        attempt_id: job.attemptId, attempt_number: job.attemptCount, attempt_kind: 'retry_save',
-        ...generationTrackingFields(job),
-        ...(job.lastErrorCode ? { previous_error_code: job.lastErrorCode } : {}),
-        ...(job.lastFailurePhase ? { previous_failure_phase: job.lastFailurePhase } : {}),
-      }, undefined, 'worker', jobTrackingHost(job));
+      const retryFields = generationTrackingFields(job);
+      recordMediaGenerationRetryStarted(this.options.tracking, {
+        modality: job.modality,
+        executorKind: 'gateway',
+        providerKind: retryFields.provider_kind,
+        routeChannel: retryFields.route_channel,
+        modelProvider: retryFields.model_provider,
+        modelId: retryFields.model_id,
+        capabilityId: retryFields.capability_id,
+        entrySurface: retryFields.entry_surface,
+        destination: retryFields.destination,
+        generationMode: retryFields.generation_mode,
+        audioKind: retryFields.audio_kind,
+        referenceCount: retryFields.reference_count,
+        isEdit: retryFields.is_edit,
+        accountPlan: retryFields.account_plan,
+        parameters: job.parameters,
+        jobId: job.id,
+        requestId: job.telemetryRequestId,
+        attemptId: job.attemptId,
+        attemptNumber: job.attemptCount,
+        attemptKind: 'retry_save',
+        previousErrorCode: job.lastErrorCode,
+        previousFailurePhase: job.lastFailurePhase,
+      }, jobTrackingHost(job));
       return job;
     });
   }
@@ -833,39 +913,9 @@ export class ModelGateway {
     let retained = !!job.savePending;
     const priorErrorCode = job.attemptKind && job.attemptKind !== 'initial' ? job.lastErrorCode : undefined;
     const priorFailurePhase = job.attemptKind && job.attemptKind !== 'initial' ? job.lastFailurePhase : undefined;
-    let activeStage: MediaGenerationFailurePhase = retained ? 'saving' : 'precheck';
-    let uploadStartMs: number | undefined;
-    let uploadMs: number | undefined;
-    let remoteStartMs: number | undefined;
-    let remoteMs: number | undefined;
-    let downloadStartMs: number | undefined;
-    let downloadMs: number | undefined;
-    let saveStartMs: number | undefined;
-    let reconnectedCount = 0;
-    const closeUpload = (now: number) => {
-      if (uploadStartMs !== undefined) { uploadMs = (uploadMs ?? 0) + Math.max(0, now - uploadStartMs); uploadStartMs = undefined; }
-    };
-    const closeRemote = (now: number) => {
-      if (remoteStartMs !== undefined) { remoteMs = (remoteMs ?? 0) + Math.max(0, now - remoteStartMs); remoteStartMs = undefined; }
-    };
-    const closeDownload = (now: number) => {
-      if (downloadStartMs !== undefined) { downloadMs = (downloadMs ?? 0) + Math.max(0, now - downloadStartMs); downloadStartMs = undefined; }
-    };
+    const stages = createStageTimingTracker(retained ? 'saving' : 'precheck');
     if (activeEntry) {
-      activeEntry.snapshotTimings = (): LiveTimings => {
-        const now = Date.now();
-        const curUpload = uploadStartMs !== undefined ? (uploadMs ?? 0) + Math.max(0, now - uploadStartMs) : uploadMs;
-        const curRemote = remoteStartMs !== undefined ? (remoteMs ?? 0) + Math.max(0, now - remoteStartMs) : remoteMs;
-        const curDownload = downloadStartMs !== undefined ? (downloadMs ?? 0) + Math.max(0, now - downloadStartMs) : downloadMs;
-        const curSave = saveStartMs !== undefined ? Math.max(0, now - saveStartMs) : undefined;
-        return {
-          ...(curUpload !== undefined ? { uploadMs: curUpload } : {}),
-          ...(curRemote !== undefined ? { remoteMs: curRemote } : {}),
-          ...(curDownload !== undefined ? { downloadMs: curDownload } : {}),
-          ...(curSave !== undefined ? { saveMs: curSave } : {}),
-          ...(reconnectedCount ? { reconnectedCount } : {}),
-        };
-      };
+      activeEntry.snapshotTimings = () => stages.snapshot();
     }
     const timeout = setTimeout(() => controller.abort(new Error('Generation timed out')), (job.modality === 'video' ? 30 : 15) * 60_000);
     let checking = false;
@@ -875,32 +925,11 @@ export class ModelGateway {
     }, 500);
     const progress = async (phase: string, remoteId?: string, download?: GenerationJob['download']) => {
       const now = Date.now();
-      if (phase === 'uploading') {
-        remoteStartMs = undefined;
-        activeStage = 'uploading';
-        uploadStartMs ??= now;
-      } else if (phase === 'submitting') {
-        closeUpload(now);
-        activeStage = 'submitting';
-        remoteStartMs ??= now;
-      } else if (phase === 'submitted' || phase === 'provider-queue' || phase === 'generating') {
-        closeUpload(now);
-        activeStage = job.model.provider === 'codex'
-          ? 'generating'
-          : (remoteId || job.remoteId) ? 'polling' : 'submitting';
-        remoteStartMs ??= now;
-      } else if (phase === 'reconnecting') {
-        reconnectedCount++;
-      } else if (phase === 'remote_failed') {
-        closeUpload(now);
-        closeRemote(now);
-        activeStage = 'remote_task';
-      } else if (phase === 'downloading') {
-        closeUpload(now);
-        closeRemote(now);
-        activeStage = 'downloading';
-        downloadStartMs ??= now;
-      }
+      stages.markStage(phase, {
+        isAgentProvider: job.model.provider === 'codex',
+        remoteId: remoteId ?? job.remoteId,
+        now,
+      });
       await this.store.lock(async () => { const current = await this.getJob(job.id); if (current.state !== 'running') { controller.abort(); return; }
         current.phase = phase; if (remoteId) { current.remoteId = remoteId; job.remoteId = remoteId; } if (download) current.download = download;
         if (phase === 'remote_failed') current.remoteTerminal = true;
@@ -910,7 +939,7 @@ export class ModelGateway {
       retained ||= await lstat(path.join(dir, 'outputs.json')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; });
       let files = retained ? await this.savedOutputs(job) : null;
       if (!files) {
-        activeStage = 'precheck';
+        stages.setActiveStage('precheck');
         if (job.projectId && !this.store.projectCatalog().projects.some(project => project.id === job.projectId)) throw new Error('Project not found');
         key = (await this.credential(job.model.provider)).key;
         const provider = (await this.status()).providers.find(p => p.id === job.model.provider);
@@ -925,10 +954,10 @@ export class ModelGateway {
         const reference = inputs[0]?.file;
         const willUploadReferences = !job.remoteId && inputs.length > 0 && job.modality !== 'audio'
           && (job.model.provider === 'opendesign' || (job.model.provider === 'account' && job.modality === 'image' && (inputs.length > 1 || job.parameters?.background !== undefined)));
-        activeStage = job.model.provider === 'codex'
+        stages.setActiveStage(job.model.provider === 'codex'
           ? 'generating'
-          : job.remoteId ? 'polling' : willUploadReferences ? 'uploading' : 'submitting';
-        if (!willUploadReferences) remoteStartMs = Date.now();
+          : job.remoteId ? 'polling' : willUploadReferences ? 'uploading' : 'submitting');
+        if (!willUploadReferences) stages.startRemoteDirect();
         if (job.model.provider === 'account') {
           buffers = await this.account.generate(job, dir, controller.signal, progress, reference, inputs);
         } else if (job.model.provider === 'codex') {
@@ -951,11 +980,7 @@ export class ModelGateway {
           buffers = [];
           for (const url of urls) buffers.push(Buffer.isBuffer(url) ? url : await retryRead(() => (this.options.download ?? downloadMedia)(url, controller.signal), controller.signal, 5, () => progress('reconnecting'), () => progress('downloading')));
         }
-        const decodeStart = Date.now();
-        closeUpload(decodeStart);
-        closeRemote(decodeStart);
-        closeDownload(decodeStart);
-        activeStage = 'decoding';
+        stages.markStage('decoding');
         files = [];
         if (!buffers.length) throw new Error('Provider returned no media');
         for (const [i, bytes] of buffers.entries()) {
@@ -969,8 +994,7 @@ export class ModelGateway {
         await atomic(path.join(dir, 'outputs.json'), files);
         retained = true;
       }
-      activeStage = 'saving';
-      saveStartMs = Date.now();
+      stages.markStage('saving');
       await this.store.lock(async () => {
         const current = await this.getJob(job.id); current.savePending = true;
         if (current.state === 'running') current.phase = 'saving';
@@ -1025,15 +1049,11 @@ export class ModelGateway {
             }
           }
           const doneAt = Date.now();
-          const saveMs = saveStartMs !== undefined ? Math.max(0, doneAt - saveStartMs) : undefined;
+          const finalTimings = stages.finish(doneAt);
           const totalOutputBytes = files.reduce((sum, f) => sum + f.bytes, 0);
           current.state = 'completed'; current.phase = 'completed'; current.savePending = false; delete current.error; current.updatedAt = doneAt;
           await this.saveResult(current, {
-            uploadMs,
-            remoteMs,
-            downloadMs,
-            saveMs,
-            reconnectedCount,
+            ...finalTimings,
             totalOutputBytes,
             previousErrorCode: priorErrorCode,
             previousFailurePhase: priorFailurePhase,
@@ -1055,10 +1075,7 @@ export class ModelGateway {
       await this.store.lock(async () => {
         const current = await this.getJob(job.id); if (current.state !== 'running') return;
         const failedAt = Date.now();
-        closeUpload(failedAt);
-        closeRemote(failedAt);
-        closeDownload(failedAt);
-        const saveMs = saveStartMs !== undefined ? Math.max(0, failedAt - saveStartMs) : undefined;
+        const finalTimings = stages.finish(failedAt);
         const unavailable = error instanceof Error && error.message.startsWith('SAVE_NOT_AVAILABLE:');
         current.state = 'failed'; current.phase = unavailable ? 'save_unavailable' : retained ? 'save_failed' : 'failed'; current.savePending = retained && !unavailable; current.updatedAt = failedAt;
         let message = controller.signal.aborted ? 'Generation stopped or timed out; no automatic retry was made' : error instanceof Error ? error.message : 'Generation failed';
@@ -1067,20 +1084,16 @@ export class ModelGateway {
         current.error = message.slice(0, 500);
         const failurePhase: MediaGenerationFailurePhase = unavailable
           ? 'save_unavailable'
-          : retained || activeStage === 'saving'
+          : retained || stages.activeStage === 'saving'
             ? 'saving'
-            : activeStage === 'remote_task' || current.remoteTerminal
+            : stages.activeStage === 'remote_task' || current.remoteTerminal
               ? 'remote_task'
-              : activeStage;
+              : stages.activeStage;
         const cause = controller.signal.aborted && controller.signal.reason instanceof Error ? controller.signal.reason : error;
         await this.saveResult(current, {
           cause,
           failurePhase,
-          uploadMs,
-          remoteMs,
-          downloadMs,
-          saveMs,
-          reconnectedCount,
+          ...finalTimings,
           previousErrorCode: priorErrorCode,
           previousFailurePhase: priorFailurePhase,
         });

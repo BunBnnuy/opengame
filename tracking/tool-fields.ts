@@ -23,14 +23,25 @@ const actionSets = {
 } as const;
 const targets = ['project', 'templates', 'providers'] as const;
 export const capabilityExecutorKinds = ['model', 'prompt-preset', 'dedicated-model', 'service', 'script'] as const;
-export const mediaModalities = ['image', 'video', 'audio'] as const;
+export const mediaModalities = ['image', 'video', 'audio', '3d'] as const;
+export type MediaTelemetryModality = typeof mediaModalities[number];
+export const mediaGenerationExecutorKinds = ['gateway', 'script'] as const;
+export type MediaGenerationExecutorKind = typeof mediaGenerationExecutorKinds[number];
+export const mediaGenerationSpatialKinds = ['asset', 'world'] as const;
+export type MediaGenerationSpatialKind = typeof mediaGenerationSpatialKinds[number];
+export const mediaGenerationPipelineSteps = ['base', 'rig', 'retarget', 'postprocess', 'world'] as const;
+export type MediaGenerationPipelineStep = typeof mediaGenerationPipelineSteps[number];
 export const mediaGenerationRouteChannels = ['amr_account', 'amr_opendesign', 'byok_builtin', 'byok_agent', 'byok_custom'] as const;
 export type MediaGenerationRouteChannel = typeof mediaGenerationRouteChannels[number];
 export const mediaGenerationEntrySurfaces = ['studio', 'mcp_media_use', 'mcp_assets_use', 'mcp_capability_run', 'scenario', 'unknown'] as const;
 export type MediaGenerationEntrySurface = typeof mediaGenerationEntrySurfaces[number];
 export const mediaGenerationDestinations = ['library', 'project'] as const;
 export type MediaGenerationDestination = typeof mediaGenerationDestinations[number];
-export const mediaGenerationModes = ['text-to-image', 'text-to-video', 'text-to-audio', 'text-to-speech'] as const;
+export const mediaGenerationModes = [
+  'text-to-image', 'text-to-video', 'text-to-audio', 'text-to-speech',
+  'text-to-3d', 'image-to-3d', 'rig-3d', 'retarget-3d', 'edit-3d',
+  'text-to-world', 'image-to-world', 'edit-world',
+] as const;
 export type MediaGenerationMode = typeof mediaGenerationModes[number];
 export const mediaGenerationAudioKinds = ['speech', 'music', 'sfx', 'other'] as const;
 export type MediaGenerationAudioKind = typeof mediaGenerationAudioKinds[number];
@@ -38,16 +49,20 @@ export const mediaGenerationAccountPlans = ['free', 'go', 'plus', 'pro', 'team',
 export type MediaGenerationAccountPlan = typeof mediaGenerationAccountPlans[number];
 export const mediaGenerationRejectionCategories = [
   'commercial_gate', 'auth_credential', 'client_validation', 'provider_unavailable',
-  'reference_invalid', 'project_missing', 'config_changed', 'queue_full', 'other',
+  'runtime_unavailable', 'reference_invalid', 'project_missing', 'config_changed',
+  'queue_full', 'local_storage', 'other',
 ] as const;
 export type MediaGenerationRejectionCategory = typeof mediaGenerationRejectionCategories[number];
 export const mediaGenerationRejectionReasons = [
   'INVALID_PROMPT', 'INVALID_PARAMETERS', 'INVALID_MODE', 'INVALID_DESTINATION', 'INVALID_USAGE',
   'INVALID_IDEMPOTENCY_KEY', 'IDEMPOTENCY_CONFLICT', 'PROJECT_NOT_FOUND', 'PROJECT_NOT_OPEN',
+  'STUDIO_NOT_OPEN', 'NATIVE_RUNTIME_MISSING',
+  'CAPABILITY_NOT_FOUND', 'CAPABILITY_COMING_SOON', 'CAPABILITY_DEPRECATED', 'CAPABILITY_CHANNEL_DISABLED',
+  'CAPABILITY_UNAVAILABLE', 'CAPABILITY_MODEL_INCOMPATIBLE',
   'ACCOUNT_SIGNED_OUT', 'ACCOUNT_NOT_ENTITLED', 'KEY_REJECTED', 'PROVIDER_NOT_CONFIGURED', 'MODEL_UNAVAILABLE',
   'CONFIG_CHANGED', 'OPTIONS_INVALID', 'REFERENCE_UNSUPPORTED', 'REFERENCE_LIMIT_EXCEEDED',
   'REFERENCE_TOO_LARGE', 'REFERENCE_INVALID_FORMAT', 'REFERENCE_UNREADABLE', 'REFERENCE_CONFLICT',
-  'LIBRARY_INVALID', 'QUEUE_FULL', 'PREFLIGHT_FAILED',
+  'LIBRARY_INVALID', 'QUEUE_FULL', 'NOT_RESUMABLE', 'SAVE_UNAVAILABLE', 'PREFLIGHT_FAILED',
 ] as const;
 export type MediaGenerationRejectionReason = typeof mediaGenerationRejectionReasons[number];
 export const mediaGenerationFailurePhases = [
@@ -304,14 +319,14 @@ export function mediaGenerationError(error: unknown, phase?: string): MediaGener
   if (lower.startsWith('save_not_available:')) return 'SAVE_UNAVAILABLE';
   // Timeouts (local deadline or remote timeout) take precedence over generic phase buckets.
   if (upstreamCode === 'timeout' || lower.includes('timed out') || lower.includes('timeout')) return 'TIMEOUT';
-  if (phase === 'uploading' && (source === 'storage' || lower.includes('reference upload storage'))) return 'UPLOAD_FAILED';
+  if (phase === 'uploading' && (source === 'storage' || lower.includes('reference upload storage') || lower.includes('reference image put failed'))) return 'UPLOAD_FAILED';
   if (phase === 'downloading' || source === 'download') {
     if (status === 401 && upstreamCode === 'unauthorized') return 'AUTH_REJECTED';
     return 'DOWNLOAD_FAILED';
   }
   if (phase === 'save_failed' || phase === 'saving') return 'SAVE_FAILED';
   if (phase === 'decoding') {
-    if (lower.includes('returned no media') || lower.includes('returned no images') || lower.includes('without media output')) return 'EMPTY_OUTPUT';
+    if (lower.includes('returned no media') || lower.includes('returned no images') || lower.includes('without media output') || lower.includes('without a downloadable')) return 'EMPTY_OUTPUT';
     return 'INVALID_MEDIA';
   }
   if (upstreamCode === 'insufficient_balance' || status === 402) return 'BALANCE_LOW';

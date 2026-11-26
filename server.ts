@@ -24,6 +24,8 @@ import { collectWorkspaceResources } from './gateway/super-agent-resources.ts';
 import { listTaskWorkspaceEntries, readTaskWorkspaceFile, resolveBrowsableRoots } from './gateway/super-agent-workspace.ts';
 import { assetHttp } from './gateway/asset-http.ts';
 import { capabilityDiscover, capabilityRun, loadCapabilityCatalog, syncCapabilityRemoteConfig } from './gateway/capability-center.ts';
+import { isMediaTelemetryModality, recordPreGatewayRejection, spatialKindForCapability } from './gateway/media-telemetry.ts';
+import { findCapability } from './shared/capability-registry.ts';
 import { getWorkflow } from './shared/workflow.ts';
 import { attachmentDisposition } from './shared/http-header.ts';
 import { isMain } from './shared/entry.ts';
@@ -1397,7 +1399,30 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
       if (url.pathname === '/api/capabilities/run' && req.method === 'POST') {
         const body = await input(req);
         const isDryRun = body?.dryRun === true;
-        if (!isDryRun && !context.studio?.alive()) return json(res, 503, { error: 'Open the Studio before generating media' });
+        if (!isDryRun && !context.studio?.alive()) {
+          const cap = typeof body?.capabilityId === 'string' ? findCapability(body.capabilityId) : undefined;
+          const resolvedModality = isMediaTelemetryModality(cap?.modality)
+            ? cap.modality
+            : isMediaTelemetryModality(body?.modality) ? body.modality : undefined;
+          if (resolvedModality && cap?.executor.kind !== 'service') {
+            const refCount = Array.isArray(body?.references) ? body.references.length : 0;
+            recordPreGatewayRejection(context.tracking, {
+              modality: resolvedModality,
+              executorKind: cap?.executor.kind === 'script' ? 'script' : 'gateway',
+              capabilityId: typeof body?.capabilityId === 'string' ? body.capabilityId : undefined,
+              spatialKind: spatialKindForCapability(cap?.id),
+              entrySurface: 'studio',
+              destination: 'library',
+              referenceCount: refCount,
+              isEdit: refCount > 0 || Boolean(body?.parentVersionId),
+              hasIdempotencyKey: typeof body?.requestId === 'string' && body.requestId.length > 0,
+              parameters: body?.parameters && typeof body.parameters === 'object' && !Array.isArray(body.parameters) ? body.parameters : undefined,
+              reason: 'STUDIO_NOT_OPEN',
+              category: 'runtime_unavailable',
+            });
+          }
+          return json(res, 503, { error: 'Open the Studio before generating media' });
+        }
         return json(res, isDryRun ? 200 : 202, await capabilityRun(store, { action: 'run', ...body }, context.tracking, 'gui'));
       }
       return json(res, 404, { error: 'Unknown capability center operation' });
@@ -1421,7 +1446,27 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
       if (route && req.method === 'PUT') return json(res, 200, await gateway.setRoute(route[1], (await input(req)).model));
       if (url.pathname === '/api/models/custom' && req.method === 'POST') return json(res, 200, await gateway.registerModel(await input(req)));
       if (url.pathname === '/api/generations' && req.method === 'POST') {
-        if (!context.studio?.alive()) return json(res, 503, { error: 'Open the Studio before generating media' });
+        if (!context.studio?.alive()) {
+          const body = await input(req).catch(() => undefined);
+          if (isMediaTelemetryModality(body?.modality)) {
+            const refCount = (Array.isArray(body?.library?.references) ? body.library.references.length : 0)
+              + (typeof body?.referenceAsset === 'string' && body.referenceAsset ? 1 : 0);
+            recordPreGatewayRejection(context.tracking, {
+              modality: body.modality,
+              executorKind: 'gateway',
+              capabilityId: typeof body?.capabilityId === 'string' ? body.capabilityId : typeof body?.library?.capabilityId === 'string' ? body.library.capabilityId : undefined,
+              entrySurface: 'studio',
+              destination: body?.library ? 'library' : 'project',
+              referenceCount: refCount,
+              isEdit: refCount > 0 || Boolean(body?.library?.parentVersionId),
+              hasIdempotencyKey: typeof body?.idempotencyKey === 'string' && body.idempotencyKey.length > 0,
+              parameters: body?.parameters && typeof body.parameters === 'object' && !Array.isArray(body.parameters) ? body.parameters : undefined,
+              reason: 'STUDIO_NOT_OPEN',
+              category: 'runtime_unavailable',
+            });
+          }
+          return json(res, 503, { error: 'Open the Studio before generating media' });
+        }
         return json(res, 202, { job: await gateway.submit(await input(req), undefined, { entrySurface: 'studio' }) });
       }
       if (url.pathname === '/api/generations' && req.method === 'GET') return json(res, 200, { jobs: (await gateway.listJobs(url.searchParams.get('projectId') ?? undefined)).slice(0, 50) });

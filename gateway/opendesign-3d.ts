@@ -7,9 +7,10 @@ import { inspectGlb } from '../scripts/game-glb-inspect.mjs';
 import { verificationBinaries } from '../scripts/verify-export.ts';
 import type { WorkspaceStore } from '../workspace.ts';
 import { atomicAssetJson, assetHash } from './asset-library.ts';
-import type { CapabilityScriptContext, CapabilityScriptOutput } from './capability-scripts.ts';
+import type { CapabilityScriptContext, CapabilityScriptOutput, CapabilityScriptStage, CapabilityScriptTelemetryMeta } from './capability-scripts.ts';
 import { optimizeGlbTexturesForPublish } from './glb-optimize.ts';
-import { ProviderError, publicProviderFetch, retryRead, type Fetcher } from './network.ts';
+import { ProviderError, publicProviderFetch, retryRead, withErrorMeta, type Fetcher } from './network.ts';
+import type { MediaGenerationMode, MediaGenerationPipelineStep } from '../tracking/tool-fields.ts';
 import { cloud3dModels, cloudSpatialCatalog, cloudWorldModels, mediaSubmitHeaders, productionApi, type Cloud3dModelEntry } from './opendesign.ts';
 import { gatewayFor } from './service.ts';
 
@@ -38,13 +39,41 @@ const MIME_BY_EXT: Record<string, string> = {
 
 type SpatialProvider = 'account' | 'opendesign' | 'env';
 
+type SpatialTelemetryHooks = {
+  report: (stage: CapabilityScriptStage, meta?: CapabilityScriptTelemetryMeta) => void;
+};
+
 type Resolved3dEndpoint = {
   provider: SpatialProvider;
   baseUrl: string;
   apiKey: string;
   taskTimeoutMs: number;
   models: Cloud3dModelEntry[];
+  telemetry?: SpatialTelemetryHooks;
 };
+
+function spatialPipelineStepFor(operation: unknown, isWorld: boolean): MediaGenerationPipelineStep {
+  if (isWorld) return 'world';
+  const op = typeof operation === 'string' ? operation.trim().toLowerCase() : '';
+  if (op === 'rig') return 'rig';
+  if (op === 'retarget' || op === 'rig_retarget') return 'retarget';
+  if (op === 'text_to_model' || op === 'image_to_model' || op === 'multiview_to_model' || op === 'image_to_splat') return 'base';
+  return 'postprocess';
+}
+
+function spatialModeFor(operation: unknown, isWorld: boolean): MediaGenerationMode {
+  const op = typeof operation === 'string' ? operation.trim() : '';
+  if (isWorld) {
+    if (op === 'atlasTextToImage') return 'text-to-world';
+    if (op === 'images2PosedRGBD') return 'image-to-world';
+    return 'edit-world';
+  }
+  if (op === 'text_to_model') return 'text-to-3d';
+  if (op === 'image_to_model' || op === 'multiview_to_model' || op === 'image_to_splat') return 'image-to-3d';
+  if (op === 'rig') return 'rig-3d';
+  if (op === 'retarget' || op === 'rig_retarget') return 'retarget-3d';
+  return 'edit-3d';
+}
 
 export type OpenDesign3dDiscovery = {
   available: boolean;
@@ -406,7 +435,10 @@ async function tripoJson<T = any>(
   }
   if (!res.ok) {
     const detail = parsed?.error?.message || parsed?.error || parsed?.message || parsed?.detail || text.slice(0, 300);
-    throw new ProviderError(`3D gateway HTTP ${res.status} on ${endpoint}: ${String(detail)}`, res.status);
+    const upstreamCode = typeof parsed?.error?.code === 'string'
+      ? parsed.error.code
+      : typeof parsed?.code === 'string' ? parsed.code : undefined;
+    throw new ProviderError(`3D gateway HTTP ${res.status} on ${endpoint}: ${String(detail)}`, res.status, upstreamCode, 'api');
   }
   return parsed as T;
 }
@@ -484,6 +516,7 @@ async function uploadReferenceImage(
   idempotencyKey: string,
 ): Promise<string> {
   const { bytes, contentType, filename } = await prepareUploadReferenceBytes(filePath);
+  config.telemetry?.report('uploading');
 
   const created = await tripoJson<any>(fetcher, config, '/api/v1/media/uploads', {
     method: 'POST',
@@ -515,7 +548,10 @@ async function uploadReferenceImage(
     signal: AbortSignal.timeout(60_000),
   });
   if (!putRes.ok) {
-    throw new Error(`3D reference image PUT failed with HTTP ${putRes.status}`);
+    throw withErrorMeta(new Error(`3D reference image PUT failed with HTTP ${putRes.status}`), {
+      status: putRes.status,
+      errorSource: 'storage',
+    });
   }
 
   await tripoJson(fetcher, config, `/api/v1/media/uploads/${encodeURIComponent(uploadId)}/commit`, {
@@ -572,8 +608,12 @@ async function submitAndWaitTask(
   } = {},
 ): Promise<TripoTaskResult> {
   const taskBasePath = options.taskBasePath ?? '/api/v1/media/3d/tasks';
+  const isWorld = taskBasePath.includes('/worlds/');
+  const pipelineStep = spatialPipelineStepFor(payload.operation, isWorld);
+  const mode = spatialModeFor(payload.operation, isWorld);
   let taskId = options.existingTaskId;
   if (!taskId) {
+    config.telemetry?.report('submitting', { pipelineStep, mode });
     const submissionJobId = deterministicAttributionUuid(idempotencyKey);
     const submitted = await tripoJson<any>(fetcher, config, taskBasePath, {
       method: 'POST',
@@ -587,6 +627,7 @@ async function submitAndWaitTask(
     await options.onSubmitted?.(taskId);
   }
 
+  config.telemetry?.report('polling', { pipelineStep, mode, remoteId: taskId });
   const deadline = Date.now() + config.taskTimeoutMs;
   const pollController = new AbortController();
   while (Date.now() < deadline) {
@@ -594,6 +635,8 @@ async function submitAndWaitTask(
       () => tripoJson<any>(fetcher, config, `${taskBasePath}/${encodeURIComponent(taskId)}`),
       pollController.signal,
       4,
+      async () => { config.telemetry?.report('reconnecting', { pipelineStep, mode, remoteId: taskId }); },
+      async () => { config.telemetry?.report('polling', { pipelineStep, mode, remoteId: taskId }); },
     );
     const status = String(polled.status ?? polled.state ?? '').toLowerCase();
     if (status === 'succeeded' || status === 'completed' || status === 'success') {
@@ -602,7 +645,14 @@ async function submitAndWaitTask(
     }
     if (status === 'failed' || status === 'cancelled' || status === 'canceled' || status === 'error') {
       const errMsg = polled?.error?.message || polled?.error || polled?.message || status;
-      throw new Error(`3D task ${taskId} (${String(payload.operation ?? 'unknown')}) ${status}: ${String(errMsg)}`);
+      const upstreamCode = typeof polled?.error?.code === 'string'
+        ? polled.error.code
+        : typeof polled?.code === 'string' ? polled.code : undefined;
+      config.telemetry?.report('remote_failed', { pipelineStep, mode, remoteId: taskId, remoteTerminal: true });
+      throw withErrorMeta(
+        new Error(`3D task ${taskId} (${String(payload.operation ?? 'unknown')}) ${status}: ${String(errMsg)}`),
+        { ...(upstreamCode ? { upstreamCode } : {}), errorSource: 'api' },
+      );
     }
     await sleep(pollMs);
   }
@@ -686,6 +736,7 @@ async function downloadArtifact(
   artifact: TripoArtifact,
   destination: string,
 ): Promise<number> {
+  config.telemetry?.report('downloading');
   const target = resolveArtifactDownloadTarget(config, artifact);
   const controller = new AbortController();
   const buffer = await retryRead(async () => {
@@ -695,11 +746,12 @@ async function downloadArtifact(
       signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) {
-      throw new ProviderError(`Failed to download 3D GLB artifact: HTTP ${res.status}`, res.status);
+      throw new ProviderError(`Failed to download 3D GLB artifact: HTTP ${res.status}`, res.status, undefined, 'download');
     }
     return readBoundedResponseBuffer(res, MAX_SPATIAL_DOWNLOAD_BYTES);
-  }, controller.signal, 3);
+  }, controller.signal, 3, async () => { config.telemetry?.report('reconnecting'); }, async () => { config.telemetry?.report('downloading'); });
 
+  config.telemetry?.report('decoding');
   if (buffer.length < 20 || buffer.readUInt32LE(0) !== 0x46546c67) {
     throw new Error(`Downloaded 3D artifact is not a valid binary .glb file (size=${buffer.length})`);
   }
@@ -747,24 +799,43 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   const params = ctx.parameters ?? {};
   const requestedRaw = ctx.model || (typeof params.model === 'string' ? params.model : undefined);
   const requested = parseProviderModel(requestedRaw);
-  const config = await resolveSpatialEndpoint(ctx.store, '3d', false, requested.provider);
-  if (!config) {
+  const resolvedConfig = await resolveSpatialEndpoint(ctx.store, '3d', false, requested.provider);
+  if (!resolvedConfig) {
     throw new Error(
       requested.provider
         ? `CAPABILITY_UNAVAILABLE: Provider ${requested.provider} has no active 3D generation model`
         : 'CAPABILITY_UNAVAILABLE: No active 3D generation model (tripo-3.0) is available on the signed-in OpenDesign account or configured OpenDesign Cloud connection.',
     );
   }
-  if (requested.modelId && !config.models.some(m => m.modelId === requested.modelId)) {
-    throw new Error(`CAPABILITY_MODEL_INCOMPATIBLE: Model ${requestedRaw} is not available on provider ${config.provider}`);
+  if (requested.modelId && !resolvedConfig.models.some(m => m.modelId === requested.modelId)) {
+    throw new Error(`CAPABILITY_MODEL_INCOMPATIBLE: Model ${requestedRaw} is not available on provider ${resolvedConfig.provider}`);
   }
   const gateway = gatewayFor(ctx.store);
   const fetcher = resolveFetcher(ctx.store);
   const pollMs = gateway.options.pollMs ?? POLL_INTERVAL_MS;
   const modelId = requested.modelId
-    ?? config.models.find(m => m.modelId === DEFAULT_TRIPO_MODEL)?.modelId
-    ?? config.models[0]?.modelId
+    ?? resolvedConfig.models.find(m => m.modelId === DEFAULT_TRIPO_MODEL)?.modelId
+    ?? resolvedConfig.models[0]?.modelId
     ?? DEFAULT_TRIPO_MODEL;
+  const accountPlan = resolvedConfig.provider === 'account'
+    ? (await gateway.status().catch(() => undefined))?.providers.find(p => p.id === 'account')?.plan
+    : undefined;
+  const config: Resolved3dEndpoint = ctx.reportStage
+    ? {
+        ...resolvedConfig,
+        telemetry: {
+          report: (stage, meta) => ctx.reportStage?.(stage, {
+            provider: resolvedConfig.provider,
+            modelId,
+            providerOrigin: resolvedConfig.baseUrl,
+            spatialKind: 'asset',
+            ...(stage === 'uploading' ? { pipelineStep: 'base' as const, mode: 'image-to-3d' as const } : {}),
+            ...(accountPlan ? { accountPlan } : {}),
+            ...meta,
+          }),
+        },
+      }
+    : resolvedConfig;
 
   const qualityKey = typeof ctx.options.quality === 'string' && ctx.options.quality in QUALITY_PRESETS
     ? ctx.options.quality
@@ -987,6 +1058,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   try {
     const rawPath = path.join(tempDir, 'raw.glb');
     const slimPath = path.join(tempDir, 'slim.glb');
+    config.telemetry?.report('decoding');
     const artifact = selectGlbArtifact(finalTask.artifacts);
     const rawBytes = await downloadArtifact(fetcher, config, artifact, rawPath);
 
@@ -1130,6 +1202,7 @@ async function downloadRawArtifact(
   config: Resolved3dEndpoint,
   artifact: TripoArtifact,
 ): Promise<{ buffer: Buffer; contentType: string | null }> {
+  config.telemetry?.report('downloading');
   const target = resolveArtifactDownloadTarget(config, artifact);
   const controller = new AbortController();
   return retryRead(async () => {
@@ -1139,35 +1212,55 @@ async function downloadRawArtifact(
       signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) {
-      throw new ProviderError(`Failed to download 3D world artifact: HTTP ${res.status}`, res.status);
+      throw new ProviderError(`Failed to download 3D world artifact: HTTP ${res.status}`, res.status, undefined, 'download');
     }
     const buffer = await readBoundedResponseBuffer(res, MAX_SPATIAL_DOWNLOAD_BYTES);
     return { buffer, contentType: res.headers.get('content-type') };
-  }, controller.signal, 3);
+  }, controller.signal, 3, async () => { config.telemetry?.report('reconnecting'); }, async () => { config.telemetry?.report('downloading'); });
 }
 
 export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Promise<CapabilityScriptOutput> {
   const params = ctx.parameters ?? {};
   const requestedRaw = ctx.model || (typeof params.model === 'string' ? params.model : undefined);
   const requested = parseProviderModel(requestedRaw);
-  const config = await resolveSpatialEndpoint(ctx.store, 'world', false, requested.provider);
-  if (!config) {
+  const resolvedConfig = await resolveSpatialEndpoint(ctx.store, 'world', false, requested.provider);
+  if (!resolvedConfig) {
     throw new Error(
       requested.provider
         ? `CAPABILITY_UNAVAILABLE: Provider ${requested.provider} has no active 3D world model`
         : 'CAPABILITY_UNAVAILABLE: No active 3D world model (e.g. worldlabs-atlas) is exposed on your configured OpenDesign account or Cloud gateway.',
     );
   }
-  if (requested.modelId && !config.models.some(m => m.modelId === requested.modelId)) {
-    throw new Error(`CAPABILITY_MODEL_INCOMPATIBLE: Model ${requestedRaw} is not available on provider ${config.provider}`);
+  if (requested.modelId && !resolvedConfig.models.some(m => m.modelId === requested.modelId)) {
+    throw new Error(`CAPABILITY_MODEL_INCOMPATIBLE: Model ${requestedRaw} is not available on provider ${resolvedConfig.provider}`);
   }
   const gateway = gatewayFor(ctx.store);
   const fetcher = resolveFetcher(ctx.store);
   const pollMs = gateway.options.pollMs ?? POLL_INTERVAL_MS;
   const modelId = requested.modelId
-    ?? config.models.find(m => m.modelId === DEFAULT_WORLD_MODEL)?.modelId
-    ?? config.models[0]?.modelId
+    ?? resolvedConfig.models.find(m => m.modelId === DEFAULT_WORLD_MODEL)?.modelId
+    ?? resolvedConfig.models[0]?.modelId
     ?? DEFAULT_WORLD_MODEL;
+  const accountPlan = resolvedConfig.provider === 'account'
+    ? (await gateway.status().catch(() => undefined))?.providers.find(p => p.id === 'account')?.plan
+    : undefined;
+  const config: Resolved3dEndpoint = ctx.reportStage
+    ? {
+        ...resolvedConfig,
+        telemetry: {
+          report: (stage, meta) => ctx.reportStage?.(stage, {
+            provider: resolvedConfig.provider,
+            modelId,
+            providerOrigin: resolvedConfig.baseUrl,
+            spatialKind: 'world',
+            pipelineStep: 'world',
+            ...(stage === 'uploading' ? { mode: 'image-to-world' as const } : {}),
+            ...(accountPlan ? { accountPlan } : {}),
+            ...meta,
+          }),
+        },
+      }
+    : resolvedConfig;
 
   const rawParamOp = typeof params.operation === 'string' && params.operation.trim() ? params.operation.trim() : undefined;
   const explicitParamOp = rawParamOp && rawParamOp !== 'auto' ? rawParamOp : undefined;
@@ -1272,8 +1365,10 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
     await rm(checkpointPath, { force: true }).catch(() => {});
   };
   try {
+    config.telemetry?.report('decoding');
     const artifact = selectWorldArtifact(task.artifacts, preferredArtifact);
     const { buffer, contentType } = await downloadRawArtifact(fetcher, config, artifact);
+    config.telemetry?.report('decoding');
     const detected = detectDownloadedArtifactFormat(buffer, contentType, artifact);
     const artifactDescriptors = task.artifacts.map(a => ({
       ...(a.name ? { name: a.name } : {}),

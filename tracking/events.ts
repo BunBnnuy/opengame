@@ -11,13 +11,17 @@ import {
   mediaGenerationEntrySurfaces,
   mediaGenerationErrorCategories,
   mediaGenerationErrorCodes,
+  mediaGenerationExecutorKinds,
   mediaGenerationFailurePhases,
   mediaGenerationModes,
+  mediaGenerationPipelineSteps,
   mediaGenerationRejectionCategories,
   mediaGenerationRejectionReasons,
   mediaGenerationResolutions,
   mediaGenerationRouteChannels,
+  mediaGenerationSpatialKinds,
   mediaGenerationUpstreamErrorCodes,
+  mediaModalities,
   superAgentErrorCodes,
   toolDimensions,
   toolFailureDimensions,
@@ -46,8 +50,9 @@ export const webMcpToolNames = ['openmotion_capability_discover', 'openmotion_ca
   'openmotion_studio_look', 'openmotion_studio_select', 'openmotion_studio_seek',
   'openmotion_studio_frame', 'openmotion_studio_inspect'] as const;
 const webMcp = { tool_name: webMcpToolNames, transport: ['webmcp'] } as const;
-const generation = { modality: ['image', 'video', 'audio'] } as const;
+const generation = { modality: mediaModalities } as const;
 const mediaGenerationDimensions = {
+  executor_kind: mediaGenerationExecutorKinds,
   provider_kind: ['builtin', 'custom', 'account', 'agent'],
   route_channel: mediaGenerationRouteChannels,
   model_provider: 'slug',
@@ -57,6 +62,8 @@ const mediaGenerationDimensions = {
   destination: mediaGenerationDestinations,
   generation_mode: mediaGenerationModes,
   audio_kind: mediaGenerationAudioKinds,
+  spatial_kind: mediaGenerationSpatialKinds,
+  pipeline_step: mediaGenerationPipelineSteps,
   reference_count: 'integer',
   is_edit: 'boolean',
   account_plan: mediaGenerationAccountPlans,
@@ -201,6 +208,8 @@ export const omEvents = {
   export_cancel_result: { producers: ['mcp'], fields: { ...business, job_id: 'uuid', state_after: ['pending', 'running', 'cancelling', 'cancelled', 'completed', 'failed'] }, required: ['outcome'] },
   media_generation_requested: { producers: ['worker'], fields: {
     ...generation, request_id: 'uuid', capability_id: 'code',
+    executor_kind: mediaGenerationExecutorKinds,
+    spatial_kind: mediaGenerationSpatialKinds,
     entry_surface: mediaGenerationEntrySurfaces, destination: mediaGenerationDestinations,
     generation_mode: mediaGenerationModes, reference_count: 'integer', is_edit: 'boolean',
     has_idempotency_key: 'boolean',
@@ -228,6 +237,13 @@ export const omEvents = {
     previous_error_code: mediaGenerationErrorCodes,
     previous_failure_phase: mediaGenerationFailurePhases,
   }, required: ['modality', 'job_id', 'attempt_id', 'attempt_number', 'attempt_kind'] },
+  media_generation_retry_rejected: { producers: ['worker'], fields: {
+    ...generation, ...mediaGenerationDimensions, job_id: 'uuid',
+    request_id: 'uuid',
+    attempt_kind: ['resume', 'retry_save'],
+    rejection_reason: mediaGenerationRejectionReasons,
+    rejection_category: mediaGenerationRejectionCategories,
+  }, required: ['modality', 'job_id', 'attempt_kind', 'rejection_reason', 'rejection_category'] },
   media_generation_result: { producers: ['worker'], fields: {
     ...generation, ...mediaGenerationDimensions, job_id: 'uuid',
     request_id: 'uuid', attempt_id: 'uuid', attempt_number: 'integer',

@@ -1,10 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import os from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 import { fixture } from './fixtures.ts';
-import { createTracker, validField, validProperties } from '../tracking/core.ts';
+import { WorkspaceStore } from '../workspace.ts';
+import { createTracker, type PendingEvent, validField, validProperties } from '../tracking/core.ts';
+import { gatewayFor } from '../gateway/service.ts';
+import { capabilityRun, jobManage, registerCapabilityScriptExecutor, unregisterCapabilityScriptExecutor } from '../gateway/capability-center.ts';
+import { clearOpenDesign3dDiscoveryCache } from '../gateway/opendesign-3d.ts';
+import { assetOperation } from '../gateway/asset-operations.ts';
+import { assetHash, AssetLibrary } from '../gateway/asset-library.ts';
+import { handler as serverHandler } from '../server.ts';
 import { omEvents, studioEvents } from '../tracking/events.ts';
 import { resumableDownload } from '../gateway/resumable-download.ts';
 import {
@@ -1094,3 +1105,839 @@ test('Media tracking review regressions: storage PUT 403, Cloud entitlement 403,
   await falGateway.close();
   tracking.close();
 }, false));
+
+
+// ==================== UNIFIED MEDIA TELEMETRY (3D / SCRIPT / PRE-GATEWAY / RETRY REJECTED) ====================
+
+const unifiedTinyPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0ioAAAAASUVORK5CYII=',
+  'base64',
+);
+
+function buildMinimalGlb(): Buffer {
+  const gltf = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0, name: 'Cube' }],
+    meshes: [{
+      name: 'CubeMesh',
+      primitives: [{ attributes: { POSITION: 0 }, indices: 1 }],
+    }],
+    buffers: [{ byteLength: 42 }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36, target: 34962 },
+      { buffer: 0, byteOffset: 36, byteLength: 6, target: 34963 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3', min: [0, 0, 0], max: [1, 1, 0] },
+      { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+  };
+  let jsonBuf = Buffer.from(JSON.stringify(gltf), 'utf8');
+  while (jsonBuf.length % 4 !== 0) jsonBuf = Buffer.concat([jsonBuf, Buffer.from(' ')]);
+
+  const binData = Buffer.alloc(44);
+  binData.writeFloatLE(0, 0); binData.writeFloatLE(0, 4); binData.writeFloatLE(0, 8);
+  binData.writeFloatLE(1, 12); binData.writeFloatLE(0, 16); binData.writeFloatLE(0, 20);
+  binData.writeFloatLE(0, 24); binData.writeFloatLE(1, 28); binData.writeFloatLE(0, 32);
+  binData.writeUInt16LE(0, 36); binData.writeUInt16LE(1, 38); binData.writeUInt16LE(2, 40);
+
+  const totalLength = 12 + 8 + jsonBuf.length + 8 + binData.length;
+  const header = Buffer.alloc(12);
+  header.writeUInt32LE(0x46546c67, 0); // "glTF"
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(totalLength, 8);
+
+  const jsonHeader = Buffer.alloc(8);
+  jsonHeader.writeUInt32LE(jsonBuf.length, 0);
+  jsonHeader.writeUInt32LE(0x4e4f534a, 4); // "JSON"
+
+  const binHeader = Buffer.alloc(8);
+  binHeader.writeUInt32LE(binData.length, 0);
+  binHeader.writeUInt32LE(0x004e4942, 4); // "BIN\0"
+
+  return Buffer.concat([header, jsonHeader, jsonBuf, binHeader, binData]);
+}
+
+const minimalGlb = buildMinimalGlb();
+
+async function makeTracking() {
+  const sent: PendingEvent[] = [];
+  const tracking = createTracker({
+    registry: omEvents,
+    entrypoint: 'worker',
+    enabled: true,
+    flushIntervalMs: 0,
+    send: async batch => {
+      sent.push(...batch);
+      return 'accepted';
+    },
+  });
+  return {
+    tracking,
+    sent,
+    flushAll: async () => {
+      while (tracking.pending() > 0) await tracking.flush();
+    },
+  };
+}
+
+function assertClosedFunnel(events: PendingEvent[], filter?: (e: PendingEvent) => boolean) {
+  const scoped = filter ? events.filter(filter) : events;
+  const requested = scoped.filter(e => e.event === 'media_generation_requested');
+  const submitted = scoped.filter(e => e.event === 'media_generation_submitted');
+  const rejected = scoped.filter(e => e.event === 'media_generation_rejected');
+  const replayed = scoped.filter(e => e.event === 'media_generation_replayed');
+  assert.equal(
+    requested.length,
+    submitted.length + rejected.length + replayed.length,
+    `Funnel broken: requested=${requested.length}, submitted=${submitted.length}, rejected=${rejected.length}, replayed=${replayed.length}`,
+  );
+  const reqIds = new Set(requested.map(e => e.properties.request_id));
+  for (const ev of [...submitted, ...rejected, ...replayed]) {
+    assert.ok(reqIds.has(ev.properties.request_id), `${ev.event} request_id missing from requested`);
+  }
+}
+
+test('schema: 3d modality, spatial dimensions and media_generation_retry_rejected are registered for worker only', () => {
+  assert.equal(validField(omEvents.media_generation_requested.fields.modality, '3d'), true);
+  assert.equal(validField(omEvents.media_generation_requested.fields.executor_kind, 'script'), true);
+  assert.equal(validField(omEvents.media_generation_requested.fields.spatial_kind, 'asset'), true);
+  assert.equal(validField(omEvents.media_generation_result.fields.pipeline_step, 'retarget'), true);
+  assert.equal(validField(omEvents.media_generation_result.fields.generation_mode, 'retarget-3d'), true);
+  assert.equal(validField(omEvents.media_generation_rejected.fields.rejection_reason, 'STUDIO_NOT_OPEN'), true);
+  assert.equal(validField(omEvents.media_generation_rejected.fields.rejection_reason, 'NATIVE_RUNTIME_MISSING'), true);
+  assert.equal(validField(omEvents.media_generation_retry_rejected.fields.attempt_kind, 'resume'), true);
+  assert.equal(validField(omEvents.media_generation_retry_rejected.fields.attempt_kind, 'retry_save'), true);
+  assert.equal(Object.hasOwn(studioEvents, 'media_generation_retry_rejected'), false);
+});
+
+test('3d-asset multi-step pipeline (base -> rig -> retarget), replay, and failure attribution flow through unified media telemetry', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'om-unified-3d-'));
+  clearOpenDesign3dDiscoveryCache();
+  try {
+    const store = new WorkspaceStore(dir);
+    const { tracking, sent, flushAll } = await makeTracking();
+    const gateway = gatewayFor(store, tracking);
+    gateway.options.pollMs = 5;
+    gateway.options.detect = async () => [];
+
+    // Seed a local reference image in the Asset Library for image-to-3d tests
+    const refPngPath = path.join(dir, 'hero-ref.png');
+    await writeFile(refPngPath, unifiedTinyPng);
+    const library = new AssetLibrary(store);
+    const refAsset = await library.importFile(refPngPath, { requestId: 'seed-ref-1', name: 'Hero Ref' });
+    const refPointer = { assetId: refAsset.id, versionId: refAsset.versions[0].id };
+
+    let scenario: 'rig_retarget_ok' | 'retarget_502' | 'put_403' | 'download_403' | 'invalid_glb' | 'empty_artifacts' | 'balance_402' = 'rig_retarget_ok';
+    let taskCounter = 0;
+
+    gateway.options.fetcher = (async (input: string | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const method = (init?.method ?? 'GET').toUpperCase();
+
+      if (url.includes('/api/v1/media/models')) {
+        return new Response(JSON.stringify({
+          models: [
+            { model: 'tripo-3.0', kind: '3d_generations', label: 'Tripo 3D v3' },
+            { model: 'worldlabs-atlas', kind: 'world_generations', label: 'World Labs Atlas v2' },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (url.endsWith('/api/v1/media/uploads') && method === 'POST') {
+        return new Response(JSON.stringify({
+          asset_id: 'upload_3d_1',
+          upload_url: 'https://storage.example.test/presigned-3d-ref',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (url === 'https://storage.example.test/presigned-3d-ref' && method === 'PUT') {
+        if (scenario === 'put_403') {
+          return new Response('AccessDenied', { status: 403 });
+        }
+        return new Response('', { status: 200 });
+      }
+
+      if (url.includes('/api/v1/media/uploads/upload_3d_1/commit') && method === 'POST') {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (url.endsWith('/api/v1/media/3d/tasks') && method === 'POST') {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        if (scenario === 'balance_402') {
+          return new Response(JSON.stringify({ error: { code: 'insufficient_balance', message: 'Not enough credits' } }), {
+            status: 402,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (scenario === 'retarget_502' && body.operation === 'retarget') {
+          return new Response(JSON.stringify({ error: { code: 'service_unavailable', message: 'origin_bad_gateway' } }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const id = `tripo_task_${++taskCounter}_${body.operation}`;
+        return new Response(JSON.stringify({ task_id: id, status: 'queued' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (url.includes('/api/v1/media/3d/tasks/tripo_task_') && method === 'GET') {
+        if (scenario === 'empty_artifacts') {
+          return new Response(JSON.stringify({ status: 'succeeded', artifacts: [] }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({
+          status: 'succeeded',
+          artifacts: [{ name: 'model', format: 'glb', content_path: '/api/v1/media/3d/content/model.glb' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (url.includes('/api/v1/media/3d/content/model.glb')) {
+        if (scenario === 'download_403') {
+          return new Response('Forbidden', { status: 403 });
+        }
+        if (scenario === 'invalid_glb') {
+          return new Response(Buffer.from('not-a-valid-glb-payload-at-all'), { status: 200 });
+        }
+        return new Response(minimalGlb, { status: 200, headers: { 'Content-Type': 'model/gltf-binary' } });
+      }
+
+      return new Response('Not Found', { status: 404 });
+    }) as typeof fetch;
+
+    await gateway.configureProvider('opendesign', { apiKey: 'od_test_3d_key', baseUrl: 'https://api.opendesign.test' });
+    const host = { host_agent: 'codex' as const, host_agent_source: 'mcp_client_info' as const };
+
+    // 1) Multi-step 3d-asset (image_to_model -> rig -> retarget) succeeds
+    scenario = 'rig_retarget_ok';
+    const okRun = await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-rig-ok',
+      prompt: 'Low poly knight',
+      references: [refPointer],
+      options: { operation: 'rig_retarget', rigPreset: 'mixamo-idle' },
+      parameters: { slim: false },
+    }, tracking, 'mcp', host);
+    assert.equal(okRun.executorKind, 'script');
+
+    // 2) Replay the exact same 3d-asset requestId
+    const replayRun = await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-rig-ok',
+      prompt: 'Low poly knight',
+      references: [refPointer],
+      options: { operation: 'rig_retarget', rigPreset: 'mixamo-idle' },
+      parameters: { slim: false },
+    }, tracking, 'mcp', host);
+    assert.equal((replayRun as { replayed?: boolean }).replayed, true);
+
+    // 3) Conflicting requestId -> rejected (not submitted)
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-rig-ok',
+      prompt: 'Different prompt for conflict',
+      references: [refPointer],
+      options: { operation: 'rig_retarget', rigPreset: 'mixamo-idle' },
+    }, tracking, 'mcp', host), /REQUEST_ID_CONFLICT/);
+
+    // 4) Multi-step failure at step 3 (retarget HTTP 502)
+    scenario = 'retarget_502';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-retarget-502',
+      prompt: 'Knight failing retarget',
+      options: { operation: 'rig_retarget', rigPreset: 'mixamo-slash' },
+    }, tracking, 'mcp', host), /HTTP 502/);
+
+    // 5) Presigned storage PUT 403 -> UPLOAD_FAILED / network_download (NOT AUTH_REJECTED)
+    scenario = 'put_403';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-put-403',
+      prompt: 'Knight upload put 403',
+      references: [refPointer],
+      options: { operation: 'image_to_model' },
+    }, tracking, 'mcp', host), /PUT failed with HTTP 403/);
+
+    // 6) Download 403 -> DOWNLOAD_FAILED / network_download (NOT AUTH_REJECTED)
+    scenario = 'download_403';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-dl-403',
+      prompt: 'Knight download 403',
+      options: { operation: 'text_to_model' },
+    }, tracking, 'mcp', host), /HTTP 403/);
+
+    // 7) Invalid GLB magic bytes -> failure_phase=decoding, INVALID_MEDIA / media_invalid
+    scenario = 'invalid_glb';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-bad-glb',
+      prompt: 'Knight corrupt glb',
+      options: { operation: 'text_to_model' },
+    }, tracking, 'mcp', host), /not a valid binary \.glb/);
+
+    // 8) Empty artifacts -> failure_phase=decoding, EMPTY_OUTPUT
+    scenario = 'empty_artifacts';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-empty-art',
+      prompt: 'Knight empty artifacts',
+      options: { operation: 'text_to_model' },
+    }, tracking, 'mcp', host), /without a downloadable/);
+
+    // 9) Balance 402 -> BALANCE_LOW / commercial_gate
+    scenario = 'balance_402';
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-402',
+      prompt: 'Knight 402',
+      options: { operation: 'text_to_model' },
+    }, tracking, 'mcp', host), /HTTP 402/);
+
+    // 10) Preflight validation error inside script (rig_retarget without animation) -> rejected (not submitted!)
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-3d-preflight-bad',
+      prompt: 'Knight missing animation',
+      options: { operation: 'rig_retarget' },
+    }, tracking, 'mcp', host), /requires an animation/);
+
+    await flushAll();
+
+    // Closed conservation funnel across ALL 10 calls!
+    assertClosedFunnel(sent);
+    assertClosedFunnel(sent, e => e.properties.modality === '3d' && e.properties.executor_kind === 'script');
+
+    const submitted = sent.filter(e => e.event === 'media_generation_submitted');
+    const results = sent.filter(e => e.event === 'media_generation_result');
+    const replayed = sent.filter(e => e.event === 'media_generation_replayed');
+    const rejected = sent.filter(e => e.event === 'media_generation_rejected');
+
+    assert.equal(submitted.length, 7);
+    assert.equal(results.length, 7);
+    assert.equal(replayed.length, 1);
+    assert.equal(rejected.length, 2);
+
+    // Check completed multi-step run
+    const okRes = results.find(e => e.properties.job_state === 'completed');
+    assert.ok(okRes);
+    assert.equal(okRes.properties.modality, '3d');
+    assert.equal(okRes.properties.executor_kind, 'script');
+    assert.equal(okRes.properties.spatial_kind, 'asset');
+    assert.equal(okRes.properties.pipeline_step, 'retarget');
+    assert.equal(okRes.properties.route_channel, 'amr_opendesign');
+    assert.equal(okRes.properties.model_id, 'tripo-3.0');
+    assert.equal(okRes.properties.asset_count, 1);
+    assert.equal(okRes.properties.has_remote_id, true);
+    assert.equal(okRes.host_context?.host_agent, 'codex');
+    assert.equal(typeof okRes.properties.upload_ms, 'number');
+    assert.equal(typeof okRes.properties.remote_ms, 'number');
+    assert.equal(typeof okRes.properties.download_ms, 'number');
+    assert.equal(typeof okRes.properties.save_ms, 'number');
+    assert.ok((okRes.properties.total_output_bytes as number) > 0);
+
+    // Replay shares the same job_id UUID
+    assert.equal(replayed[0].properties.job_id, okRes.properties.job_id);
+    assert.equal(replayed[0].properties.existing_job_state, 'completed');
+
+    // Step 3 retarget 502 attribution
+    const res502 = results.find(e => e.properties.http_status === 502);
+    assert.ok(res502);
+    assert.equal(res502.properties.pipeline_step, 'retarget');
+    assert.equal(res502.properties.failure_phase, 'submitting');
+    assert.equal(res502.properties.error_code, 'UPSTREAM_5XX');
+    assert.equal(res502.properties.error_category, 'upstream_error');
+    assert.equal(res502.properties.upstream_error_code, 'service_unavailable');
+
+    // Presigned PUT 403 -> UPLOAD_FAILED / network_download with pipeline_step=base & generation_mode=image-to-3d
+    const resPut403 = results.find(e => e.properties.failure_phase === 'uploading');
+    assert.ok(resPut403);
+    assert.equal(resPut403.properties.http_status, 403);
+    assert.equal(resPut403.properties.error_code, 'UPLOAD_FAILED');
+    assert.equal(resPut403.properties.error_category, 'network_download');
+    assert.equal(resPut403.properties.pipeline_step, 'base');
+    assert.equal(resPut403.properties.generation_mode, 'image-to-3d');
+
+    // Download 403 -> DOWNLOAD_FAILED / network_download
+    const resDl403 = results.find(e => e.properties.failure_phase === 'downloading');
+    assert.ok(resDl403);
+    assert.equal(resDl403.properties.http_status, 403);
+    assert.equal(resDl403.properties.error_code, 'DOWNLOAD_FAILED');
+    assert.equal(resDl403.properties.error_category, 'network_download');
+
+    // Invalid GLB -> decoding / INVALID_MEDIA
+    const resBadGlb = results.find(e => e.properties.error_code === 'INVALID_MEDIA');
+    assert.ok(resBadGlb);
+    assert.equal(resBadGlb.properties.failure_phase, 'decoding');
+    assert.equal(resBadGlb.properties.error_category, 'media_invalid');
+
+    // Empty artifacts -> decoding / EMPTY_OUTPUT
+    const resEmpty = results.find(e => e.properties.error_code === 'EMPTY_OUTPUT');
+    assert.ok(resEmpty);
+    assert.equal(resEmpty.properties.failure_phase, 'decoding');
+
+    // Balance 402 -> BALANCE_LOW / commercial_gate
+    const res402 = results.find(e => e.properties.http_status === 402);
+    assert.ok(res402);
+    assert.equal(res402.properties.error_code, 'BALANCE_LOW');
+    assert.equal(res402.properties.error_category, 'commercial_gate');
+    assert.equal(res402.properties.upstream_error_code, 'insufficient_balance');
+
+    // Rejections: IDEMPOTENCY_CONFLICT and OPTIONS_INVALID
+    const reasons = rejected.map(e => e.properties.rejection_reason).sort();
+    assert.deepEqual(reasons, ['IDEMPOTENCY_CONFLICT', 'OPTIONS_INVALID']);
+
+    await gateway.close();
+    tracking.close();
+  } finally {
+    clearOpenDesign3dDiscoveryCache();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('3d-world (World Labs Atlas) success and remote task failure emit unified spatial telemetry', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'om-unified-world-'));
+  clearOpenDesign3dDiscoveryCache();
+  try {
+    const store = new WorkspaceStore(dir);
+    const { tracking, sent, flushAll } = await makeTracking();
+    const gateway = gatewayFor(store, tracking);
+    gateway.options.pollMs = 5;
+    gateway.options.detect = async () => [];
+
+    let failWorld = false;
+    gateway.options.fetcher = (async (input: string | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/api/v1/media/models')) {
+        return new Response(JSON.stringify({
+          models: [{ model: 'worldlabs-atlas', kind: 'world_generations', label: 'World Labs Atlas v2' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/api/v1/media/worlds/tasks') && method === 'POST') {
+        return new Response(JSON.stringify({ task_id: failWorld ? 'world_fail_1' : 'world_ok_1', status: 'queued' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/api/v1/media/worlds/tasks/world_ok_1')) {
+        return new Response(JSON.stringify({
+          status: 'succeeded',
+          artifacts: [{ name: 'preview_image', format: 'png', content_path: '/api/v1/media/worlds/content/frame.png' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/v1/media/worlds/tasks/world_fail_1')) {
+        return new Response(JSON.stringify({
+          status: 'failed',
+          error: { code: 'safety_blocked', message: 'Blocked by world policy' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/v1/media/worlds/content/frame.png')) {
+        return new Response(unifiedTinyPng, { status: 200, headers: { 'Content-Type': 'image/png' } });
+      }
+      return new Response('Not Found', { status: 404 });
+    }) as typeof fetch;
+
+    await gateway.configureProvider('opendesign', { apiKey: 'od_test_world_key', baseUrl: 'https://api.opendesign.test' });
+
+    const okWorld = await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-world',
+      requestId: 'req-world-ok',
+      prompt: 'Floating archipelago in golden hour',
+    }, tracking, 'mcp');
+    assert.equal(okWorld.executorKind, 'script');
+
+    failWorld = true;
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-world',
+      requestId: 'req-world-fail',
+      prompt: 'Blocked world prompt',
+    }, tracking, 'mcp'), /failed/);
+
+    await flushAll();
+    assertClosedFunnel(sent);
+
+    const results = sent.filter(e => e.event === 'media_generation_result');
+    assert.equal(results.length, 2);
+    const okEv = results.find(e => e.properties.job_state === 'completed');
+    const failEv = results.find(e => e.properties.job_state === 'failed');
+    assert.ok(okEv && failEv);
+    assert.equal(okEv.properties.spatial_kind, 'world');
+    assert.equal(okEv.properties.pipeline_step, 'world');
+    assert.equal(okEv.properties.generation_mode, 'text-to-world');
+    assert.equal(okEv.properties.entry_surface, 'mcp_capability_run');
+    assert.equal(okEv.properties.model_id, 'worldlabs-atlas');
+
+    assert.equal(failEv.properties.spatial_kind, 'world');
+    assert.equal(failEv.properties.pipeline_step, 'world');
+    assert.equal(failEv.properties.failure_phase, 'remote_task');
+    assert.equal(failEv.properties.remote_terminal, true);
+    assert.equal(failEv.properties.upstream_error_code, 'safety_blocked');
+    assert.equal(failEv.properties.error_code, 'REMOTE_FAILED');
+    await gateway.close();
+    tracking.close();
+  } finally {
+    clearOpenDesign3dDiscoveryCache();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('pre-gateway rejections (/api/generations 503, /api/capabilities/run 503, pre-submit capability validation, assetOperation validation) and retry_rejected maintain funnel completeness', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'om-unified-pregate-'));
+  try {
+    const store = new WorkspaceStore(dir);
+    const { tracking, sent, flushAll } = await makeTracking();
+    const gateway = gatewayFor(store, tracking);
+    gateway.options.detect = async () => [];
+    gateway.options.pollMs = 5;
+
+    // 1) Server 503 STUDIO_NOT_OPEN on /api/generations and /api/capabilities/run (and dryRun=true must NOT emit!)
+    const server = createServer((req, res) => {
+      void serverHandler(req, res, store, {
+        tracking,
+        studio: { alive: () => false } as any,
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      const r1 = await fetch(`${baseUrl}/motion-api/generations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+        body: JSON.stringify({ modality: 'video', prompt: 'Ocean wave', idempotencyKey: 'k-503-gen', library: {} }),
+      });
+      assert.equal(r1.status, 503);
+
+      const r2 = await fetch(`${baseUrl}/motion-api/capabilities/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: baseUrl },
+        body: JSON.stringify({ capabilityId: '3d-asset', requestId: 'k-503-cap', prompt: 'Hero statue' }),
+      });
+      assert.equal(r2.status, 503);
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+
+    // 2) Pre-submit rejection in capabilityRun (no provider configured -> CAPABILITY_UNAVAILABLE)
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: 'text-to-image',
+      requestId: 'req-cap-no-provider',
+      prompt: 'A sunrise',
+    }, tracking, 'mcp'), /CAPABILITY_UNAVAILABLE/);
+
+    // 3) dryRun=true failure must NOT emit media_generation_* events
+    await assert.rejects(() => capabilityRun(store, {
+      action: 'run',
+      capabilityId: 'text-to-image',
+      dryRun: true,
+      prompt: 'Dry run quote',
+    }, tracking, 'mcp'), /CAPABILITY_UNAVAILABLE/);
+
+    // 4) assetOperation generate pre-gateway failure (missing model/requestId)
+    await assert.rejects(() => assetOperation(store, {
+      action: 'generate',
+      modality: 'image',
+      prompt: 'Missing model',
+    }, undefined, tracking, 'mcp'), /Choose a model/);
+
+    // 5) media_generation_retry_rejected on resume() and retrySave()
+    gateway.options.fetcher = (async (input: string | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/media/images/generations') || url.includes('/images/generations')) {
+        return new Response(JSON.stringify({ error: { code: 'invalid_request', message: 'Bad prompt' } }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ models: [{ id: 'gpt-image-2', media_type: 'image', label: 'GPT Image 2' }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+    await gateway.configureProvider('opendesign', { apiKey: 'od_retry_key', baseUrl: 'https://api.opendesign.test' });
+    const job = await gateway.submit({
+      modality: 'image',
+      prompt: 'Test retry rejection',
+      model: 'opendesign:gpt-image-2',
+      idempotencyKey: 'req-retry-rej',
+      library: {},
+    }, undefined, { entrySurface: 'mcp_assets_use' });
+    await gateway.tick();
+    while (gateway.active.size > 0) await new Promise(r => setTimeout(r, 10));
+
+    // resume on a job with no remoteId -> NOT_RESUMABLE
+    await assert.rejects(() => gateway.resume(job.id, 'resume-req-1'), /can be resumed/);
+    // retrySave on a failed job with no retained outputs -> SAVE_UNAVAILABLE
+    await assert.rejects(() => gateway.retrySave(job.id), /SAVE_NOT_AVAILABLE/);
+
+    await flushAll();
+    assertClosedFunnel(sent);
+
+    const rejected = sent.filter(e => e.event === 'media_generation_rejected');
+    const studioNotOpen = rejected.filter(e => e.properties.rejection_reason === 'STUDIO_NOT_OPEN');
+    assert.equal(studioNotOpen.length, 2);
+    assert.ok(studioNotOpen.some(e => e.properties.modality === 'video' && e.properties.executor_kind === 'gateway' && e.properties.entry_surface === 'studio'));
+    assert.ok(studioNotOpen.some(e => e.properties.modality === '3d' && e.properties.executor_kind === 'script' && e.properties.spatial_kind === 'asset'));
+
+    assert.ok(rejected.some(e => e.properties.rejection_reason === 'CAPABILITY_UNAVAILABLE' && e.properties.capability_id === 'text-to-image'));
+    assert.ok(rejected.some(e => e.properties.rejection_reason === 'INVALID_PARAMETERS' && e.properties.entry_surface === 'mcp_assets_use'));
+
+    const retryRejected = sent.filter(e => e.event === 'media_generation_retry_rejected');
+    assert.equal(retryRejected.length, 2);
+    assert.ok(retryRejected.some(e => e.properties.attempt_kind === 'resume' && e.properties.rejection_reason === 'NOT_RESUMABLE'));
+    assert.ok(retryRejected.some(e => e.properties.attempt_kind === 'retry_save' && e.properties.rejection_reason === 'SAVE_UNAVAILABLE' && e.properties.rejection_category === 'local_storage'));
+
+    await gateway.close();
+    tracking.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('custom/future script executor without reportStage still produces closed requested -> submitted -> result funnel', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'om-unified-custom-script-'));
+  const customScriptId = 'opendesign-3d';
+  try {
+    const store = new WorkspaceStore(dir);
+    const { tracking, sent, flushAll } = await makeTracking();
+    const outFile = path.join(dir, 'custom-out.glb');
+    await writeFile(outFile, minimalGlb);
+
+    registerCapabilityScriptExecutor(customScriptId, async () => ({
+      sourcePath: outFile,
+      name: 'Local Synthetic GLB',
+      result: { bytes: minimalGlb.length },
+    }));
+
+    const res = await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-local-script-1',
+      prompt: 'Procedural cube',
+    }, tracking, 'mcp');
+    assert.equal(res.executorKind, 'script');
+
+    await flushAll();
+    assertClosedFunnel(sent);
+    assert.equal(sent.filter(e => e.event === 'media_generation_submitted').length, 1);
+    const resEv = sent.find(e => e.event === 'media_generation_result');
+    assert.ok(resEv);
+    assert.equal(resEv.properties.job_state, 'completed');
+    assert.equal(resEv.properties.executor_kind, 'script');
+    assert.equal(resEv.properties.spatial_kind, 'asset');
+    assert.equal(resEv.properties.total_output_bytes, minimalGlb.length);
+    tracking.close();
+  } finally {
+    unregisterCapabilityScriptExecutor(customScriptId);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('review regressions: custom spatial model redaction, cleanup failure with concurrent waiter, fast script timing, and entry-level retry_rejected', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'om-unified-regressions-'));
+  const customScriptId = 'opendesign-3d';
+  try {
+    const store = new WorkspaceStore(dir);
+    const { tracking, sent, flushAll } = await makeTracking();
+    const outFile = path.join(dir, 'reg-out.glb');
+    await writeFile(outFile, minimalGlb);
+
+    // 1) Custom script returning private provider/model + throwing SYNCHRONOUSLY in cleanup() while a concurrent waiter awaits the same requestId
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>(resolve => { releaseHandler = resolve; });
+    let handlerStarted!: () => void;
+    const startedPromise = new Promise<void>(resolve => { handlerStarted = resolve; });
+
+    registerCapabilityScriptExecutor(customScriptId, async () => {
+      handlerStarted();
+      await handlerGate;
+      await new Promise(r => setTimeout(r, 15));
+      return {
+        sourcePath: outFile,
+        name: 'Cleanup Regression GLB',
+        cleanup: (() => {
+          throw new Error('simulated synchronous temp cleanup failure');
+        }) as unknown as () => Promise<void>,
+        result: {
+          provider: 'opendesign',
+          model: 'private-tenant-secret-3d-v9',
+          bytes: minimalGlb.length,
+        },
+      };
+    });
+
+    const p1 = capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-cleanup-race',
+      prompt: 'Cleanup race test',
+    }, tracking, 'mcp');
+    await startedPromise;
+    const p2 = capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-cleanup-race',
+      prompt: 'Cleanup race test',
+    }, tracking, 'mcp');
+    releaseHandler();
+    const [r1, r2] = await Promise.all([p1, p2]);
+    assert.equal(r1.executorKind, 'script');
+    assert.equal((r2 as { replayed?: boolean }).replayed, true);
+
+    // Tamper with on-disk receipt telemetry and verify replay re-sanitizes it (never leaks private model_id)
+    const library = new AssetLibrary(store);
+    const cleanupReceiptPath = path.join(library.root, 'requests', `${assetHash('script:req-cleanup-race')}.json`);
+    const savedReceipt = JSON.parse(await readFile(cleanupReceiptPath, 'utf8'));
+    savedReceipt.telemetry = { providerKind: 'builtin', routeChannel: 'amr_opendesign', modelProvider: 'opendesign', modelId: 'tampered-secret-3d' };
+    await writeFile(cleanupReceiptPath, JSON.stringify(savedReceipt));
+
+    const r3 = await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-cleanup-race',
+      prompt: 'Cleanup race test',
+    }, tracking, 'mcp');
+    assert.equal((r3 as { replayed?: boolean }).replayed, true);
+
+    // 1b) Cross-process active pending receipt ownership: live foreign PID prevents duplicate execution & preserves foreign receipt
+    const foreignProc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+    try {
+      const crossReqId = 'req-cross-proc-live';
+      const crossHash = assetHash({
+        capabilityId: '3d-asset',
+        prompt: 'Cross process test',
+        options: { operation: 'auto', quality: 'hero-balanced', rigPreset: 'none' },
+        parameters: {},
+        assetId: null,
+        parentVersionId: null,
+        references: [],
+      });
+      const crossReceiptPath = path.join(library.root, 'requests', `${assetHash(`script:${crossReqId}`)}.json`);
+      const foreignJobId = randomUUID();
+      await mkdir(path.dirname(crossReceiptPath), { recursive: true });
+      await writeFile(crossReceiptPath, JSON.stringify({
+        inputHash: crossHash,
+        assetId: randomUUID(),
+        jobId: foreignJobId,
+        workerPid: foreignProc.pid,
+        status: 'pending',
+      }));
+      await assert.rejects(() => capabilityRun(store, {
+        action: 'run',
+        capabilityId: '3d-asset',
+        requestId: crossReqId,
+        prompt: 'Cross process test',
+      }, tracking, 'mcp'), /REQUEST_IN_PROGRESS/);
+      const preserved = JSON.parse(await readFile(crossReceiptPath, 'utf8'));
+      assert.equal(preserved.jobId, foreignJobId);
+      assert.equal(preserved.workerPid, foreignProc.pid);
+    } finally {
+      foreignProc.kill('SIGKILL');
+    }
+
+    // 2) Private spatial model returned by custom Cloud origin via opendesign-3d must NEVER emit unapproved model_id
+    unregisterCapabilityScriptExecutor(customScriptId);
+    clearOpenDesign3dDiscoveryCache();
+    const gateway = gatewayFor(store, tracking);
+    gateway.options.pollMs = 5;
+    gateway.options.detect = async () => [];
+    gateway.options.fetcher = (async (input: string | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/api/v1/media/models')) {
+        return new Response(JSON.stringify({
+          models: [{ model: 'private-custom-3d-model', kind: '3d_generations', label: 'Private 3D' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/api/v1/media/3d/tasks') && method === 'POST') {
+        return new Response(JSON.stringify({ task_id: 'priv_task_1', status: 'queued' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/v1/media/3d/tasks/priv_task_1')) {
+        return new Response(JSON.stringify({
+          status: 'succeeded',
+          artifacts: [{ name: 'model', format: 'glb', content_path: '/api/v1/media/3d/content/priv.glb' }],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/api/v1/media/3d/content/priv.glb')) {
+        return new Response(minimalGlb, { status: 200, headers: { 'Content-Type': 'model/gltf-binary' } });
+      }
+      if (url.includes('/images/generations')) {
+        return new Response(JSON.stringify({ error: { code: 'invalid_request', message: 'fail' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('Not Found', { status: 404 });
+    }) as typeof fetch;
+    await gateway.configureProvider('opendesign', { apiKey: 'od_priv_key', baseUrl: 'https://private-cloud.example.test' });
+    await capabilityRun(store, {
+      action: 'run',
+      capabilityId: '3d-asset',
+      requestId: 'req-priv-3d',
+      prompt: 'Private model check',
+      parameters: { slim: false },
+    }, tracking, 'mcp');
+
+    // 3) Entry-level retry_rejected: invalid resume requestId + missing requestId in assetOperation & jobManage
+    const failJob = await gateway.submit({
+      modality: 'image',
+      prompt: 'Entry retry rejected test',
+      model: 'opendesign:gpt-image-2',
+      idempotencyKey: 'req-entry-retry',
+      library: {},
+    }, undefined, { entrySurface: 'mcp_assets_use' });
+    await gateway.tick();
+    while (gateway.active.size > 0) await new Promise(r => setTimeout(r, 10));
+
+    await assert.rejects(() => gateway.resume(failJob.id, 'bad space id!'), /stable requestId/);
+    await assert.rejects(() => assetOperation(store, { action: 'resume', jobId: failJob.id }, undefined, tracking, 'mcp'), /stable requestId/);
+    await assert.rejects(() => jobManage(store, { action: 'retry_save', jobId: failJob.id }, tracking), /requestId is required/);
+
+    await flushAll();
+    assertClosedFunnel(sent);
+
+    // Cleanup race: EXACTLY ONE media_generation_result for req-cleanup-race (completed, zero duplicate failed!)
+    const scriptResults = sent.filter(e => e.event === 'media_generation_result' && e.properties.executor_kind === 'script');
+    assert.equal(scriptResults.length, 2); // 1 for req-cleanup-race + 1 for req-priv-3d
+    assert.ok(scriptResults.every(e => e.properties.job_state === 'completed'));
+
+    // Fast local script measured actual handler duration (> 0ms, not 0ms with execution time dumped into queue_wait_ms)
+    const cleanupRunRes = scriptResults[0];
+    assert.ok((cleanupRunRes.properties.duration_ms as number) >= 10, `expected duration_ms >= 10, got ${cleanupRunRes.properties.duration_ms}`);
+    assert.equal(cleanupRunRes.properties.model_id, undefined);
+
+    // Private spatial model and tampered receipt model NEVER leaked anywhere in any event
+    assert.doesNotMatch(JSON.stringify(sent), /private-tenant-secret-3d-v9|private-custom-3d-model|tampered-secret-3d/);
+
+    // Entry-level retry_rejected fired for all 3 entry validations
+    const retryRej = sent.filter(e => e.event === 'media_generation_retry_rejected' && e.properties.job_id === failJob.id);
+    assert.equal(retryRej.length, 3);
+    assert.ok(retryRej.every(e => e.properties.rejection_reason === 'INVALID_IDEMPOTENCY_KEY'));
+
+    await gateway.close();
+    tracking.close();
+  } finally {
+    unregisterCapabilityScriptExecutor(customScriptId);
+    clearOpenDesign3dDiscoveryCache();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

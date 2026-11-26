@@ -105,7 +105,11 @@ export async function mediaUse(store: WorkspaceStore, args: any, tracking?: OmTr
   if (args.action === 'status' || args.action === 'cancel' || args.action === 'retry_save' || args.action === 'resume') {
     const job = await gateway.getJob(args.jobId);
     if (job.projectId !== args.projectId || job.model.provider === 'codex') throw new Error('GENERATION_NOT_FOUND: job does not belong to this project');
-    if (args.action !== 'status' && !args.requestId) throw new ToolInputError('requestId is required', 'requestId', 'missing');
+    if (args.action !== 'status' && !args.requestId) {
+      const err = new ToolInputError('requestId is required', 'requestId', 'missing');
+      if (args.action === 'resume' || args.action === 'retry_save') gateway.recordRetryRejection(job, args.action, err);
+      throw err;
+    }
     if (args.action === 'resume') return { projectId: job.projectId, job: await gateway.resume(job.id, args.requestId) };
     return { projectId: job.projectId, job: args.action === 'retry_save' ? await gateway.retrySave(job.id) : args.action === 'cancel' ? await gateway.cancel(job.id, { source: 'mcp' }) : job };
   }
