@@ -82,23 +82,13 @@ export type Service = { trackingHosts?: Map<string, { host: HostContext; created
 const service: Service = {};
 const working = new Set<string>();
 const runningExports = new Map<string, AbortController>();
-const workerInstanceId = crypto.randomUUID();
-const collectorId = crypto.randomUUID();
-let lastQueueTelemetry = 0;
 let lastCodexSessionSync = 0;
 
-async function emitQueueTelemetry(store: WorkspaceStore, tracking?: OmTracking) {
-  if (Date.now() - lastCodexSessionSync >= 60_000) {
-    lastCodexSessionSync = Date.now();
-    void syncActiveCodexThreads(store.directory).catch(() => {});
-  }
-  if (!tracking) return;
-  if (Date.now() - lastQueueTelemetry < 60_000) return;
-  lastQueueTelemetry = Date.now();
-  const job = await store.job().catch(() => null);
-  const queued = job?.state === 'pending' ? 1 : 0, running = job && ['running', 'cancelling'].includes(job.state) ? 1 : 0;
-  tracking.track('queue_snapshot', { instance_id: workerInstanceId, task_type: 'export', queued_count: queued, running_count: running, available_slots: running ? 0 : 1, counts_complete: true }, undefined, 'worker');
-  tracking.track('worker_heartbeat', { collector_id: collectorId, instance_id: workerInstanceId, active: true, queue_count: queued + running }, undefined, 'worker');
+// Periodic queue_snapshot and worker_heartbeat telemetry was retired; keep the 60s Codex session sync only.
+function syncCodexSessionsIfDue(store: WorkspaceStore) {
+  if (Date.now() - lastCodexSessionSync < 60_000) return;
+  lastCodexSessionSync = Date.now();
+  void syncActiveCodexThreads(store.directory).catch(() => {});
 }
 
 export async function cancelExport(store: WorkspaceStore, projectId: string, jobId: string, tracking = store.tracking) {
@@ -152,7 +142,7 @@ export async function trackExportTerminal(store: WorkspaceStore, final: ExportJo
 }
 
 export async function renderNext(store: WorkspaceStore, runtimeRoot: string, tracking?: OmTracking) {
-  await emitQueueTelemetry(store, tracking);
+  syncCodexSessionsIfDue(store);
   const pending = await store.job();
   const key = store.directory;
   // The tick that renders a job also owns its record, so no tick reconciles work still running in this process.

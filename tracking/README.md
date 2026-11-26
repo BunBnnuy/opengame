@@ -110,8 +110,9 @@ Historical clients and work rounds without this protocol remain unavailable. The
 Quality evidence is explicit. Technical export, preview visibility and recorded
 content review each emit `check_required` and `check_completed` with a version,
 checklist, checker type and bounded evidence reference. A technical export check
-does not assert visual or human acceptance. Queue workers emit `queue_snapshot` at
-most once per minute and `worker_heartbeat` with bounded counts. Confirmed
+does not assert visual or human acceptance. `queue_snapshot` and
+`worker_heartbeat` remain registered for schema compatibility, while local
+workers no longer emit periodic queue heartbeats. Confirmed
 correctness incidents and recovery evidence use `incident_confirmed` and
 `recovery_recorded`; ordinary task failures are not incidents.
 
@@ -125,7 +126,8 @@ by generation scene or settings section.
 ## Identity, properties and privacy
 
 `account_sign_in_result` reports each finished OpenDesign connector attempt with
-`source_product=openmotion`, `source_detail=openmotion_editor_login`, and an
+the repository's `source_product` (`opengame` in OpenGame), `source_detail`
+(the triggering `hook_id`, or `<product>_editor_login` when unspecified), and an
 `entry_id` / `entry_occurred_at` pair created when the editor starts sign-in.
 Attempts replaced within that sign-in retain the entry pair while their
 `attempt_id` changes. A new explicit sign-in creates a new entry pair. Success
