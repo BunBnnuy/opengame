@@ -1733,13 +1733,22 @@ export function SuperAgentWorkspace({
 
   // Mirror the shown template into the route (replace, no history entry) so a reload reopens it.
   const syncedTemplateGameRef = useRef<string | null>(null);
+  // The last game the route asked for that actually opened in the preview.
+  const settledRouteGameRef = useRef<string | null>(null);
   useEffect(() => {
     if (!active || !onActiveTemplateGameChange) return;
+    if (playingGameId && playingGameId === requestedGameId) settledRouteGameRef.current = playingGameId;
     const shown = playingGameId && templateFeedIds.includes(playingGameId) ? playingGameId : null;
     if (shown) {
-      syncedTemplateGameRef.current = shown;
+      const previous = syncedTemplateGameRef.current;
       // Already in the route, or a write for it is still on its way.
-      if (requestedGameId === shown || pendingRouteGameRef.current === shown) return;
+      if (requestedGameId === shown || pendingRouteGameRef.current === shown) {
+        syncedTemplateGameRef.current = shown;
+        return;
+      }
+      // Another page asked the route for a game that has not opened yet: let it open, do not overwrite.
+      if (requestedGameId && requestedGameId !== previous && requestedGameId !== settledRouteGameRef.current) return;
+      syncedTemplateGameRef.current = shown;
       pendingRouteGameRef.current = shown;
       onActiveTemplateGameChange(shown);
       return;
