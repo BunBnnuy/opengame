@@ -631,15 +631,76 @@ test('failed apply backs off for 1 hour (ERROR_RETRY_BACKOFF_MS) instead of full
   assert.equal(retried.status, 'updated');
 });
 
-test('npm run update script allows passing --check without conflicting with default apply mode', async () => {
+test('npm run update script allows passing --check without conflicting with default apply mode', async t => {
   const pkg = JSON.parse(await readFile(path.join(repoSourceRoot, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts.update, 'node --experimental-strip-types scripts/update.ts');
-  const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', 'scripts/update.ts', '--check'], {
-    cwd: repoSourceRoot,
-    timeout: 10_000,
-  });
+  const { checkout, dataDir } = await createGitFixtures(t);
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ['--experimental-strip-types', 'scripts/update.ts', '--check', '--repo', checkout, '--data-dir', dataDir],
+    {
+      cwd: repoSourceRoot,
+      timeout: 10_000,
+    },
+  );
   const parsed = JSON.parse(stdout);
-  assert.equal(typeof parsed.status, 'string');
+  assert.equal(parsed.status, 'up_to_date');
+});
+
+test('applySourceUpdate defers without resetting while a live workspace export is active and retries once completed', async t => {
+  const { upstreamWork, checkout, dataDir, fakeHome } = await createGitFixtures(t);
+  await writeFile(path.join(upstreamWork, 'README.md'), '# upstream v2\n');
+  await runGit(upstreamWork, ['add', 'README.md']);
+  await runGit(upstreamWork, ['commit', '-m', 'update while export active']);
+  await runGit(upstreamWork, ['push', 'origin', 'main']);
+
+  const before = await runGit(checkout, ['rev-parse', 'HEAD']);
+  const clock = 1_800_000_000_000;
+  const jobId = '77777777-7777-7777-7777-777777777777';
+  const jobFile = path.join(dataDir, 'jobs', jobId, 'job.json');
+  await mkdir(path.dirname(jobFile), { recursive: true });
+  await writeFile(jobFile, JSON.stringify({
+    id: jobId,
+    state: 'running',
+    expiresAt: clock + 60_000,
+    workerPid: 54321,
+  }));
+
+  const env = { ...process.env, OPENMOTION_AUTO_UPDATE: '1' };
+  const deferred = await maybeAutoUpdateBeforeCreation({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    homeDirectory: fakeHome,
+    now: () => clock,
+    env,
+    isPidAlive: pid => pid === 54321,
+    restartBackend: false,
+  });
+
+  assert.equal(deferred.status, 'deferred_active_work');
+  assert.equal(await runGit(checkout, ['rev-parse', 'HEAD']), before);
+  const stateAfterDefer = await readUpdateState(dataDir);
+  assert.equal(stateAfterDefer?.lastStatus, 'deferred_active_work');
+  assert.equal(stateAfterDefer?.lastCheckedAt, undefined);
+
+  // Once the export finishes, the very next call applies cleanly without waiting 24h.
+  await writeFile(jobFile, JSON.stringify({
+    id: jobId,
+    state: 'completed',
+    expiresAt: clock + 60_000,
+    workerPid: 54321,
+  }));
+  const applied = await maybeAutoUpdateBeforeCreation({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    homeDirectory: fakeHome,
+    now: () => clock + 1_000,
+    env,
+    isPidAlive: pid => pid === 54321,
+    restartBackend: false,
+  });
+  assert.equal(applied.status, 'updated');
+  assert.equal(await readFile(path.join(checkout, 'README.md'), 'utf8'), '# upstream v2\n');
 });
 
 test('transient network error during check backs off for 1 hour instead of stalling every call', async t => {

@@ -72,6 +72,11 @@ async function readPreviewRegistration(store: WorkspaceStore): Promise<{ port: n
 async function registeredPort(store: WorkspaceStore): Promise<number | null> {
   return (await readPreviewRegistration(store)).port;
 }
+function pidAlive(pid?: number): boolean {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 1) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException)?.code === 'EPERM'; }
+}
 export async function previewUrl(store: WorkspaceStore) {
   if (sharedEditorEnabled) { const editor = await readEditor(store.directory); if (editor) return new URL(editor.endpoint).origin; }
   return `http://localhost:${await registeredPort(store) || initialPort()}`;
@@ -124,7 +129,7 @@ export async function openPreview(store = new WorkspaceStore(), environment: Pre
         if (!matches(updated) || !updated.health?.studioUrl) throw new Error('编辑器启动后未通过就绪检查');
         health = updated.health;
       }
-      const effectivePid = pid ?? (reused && registration.port === port ? registration.pid : undefined);
+      const effectivePid = pid ?? (reused && registration.port === port && pidAlive(registration.pid) ? registration.pid : undefined);
       const file = path.join(store.directory, 'preview.json'); const temporary = file + '.' + crypto.randomUUID() + '.tmp';
       try { await writeFile(temporary, JSON.stringify({ port, pid: effectivePid, version: health.version }), { mode: 0o600 }); await rename(temporary, file); }
       finally { await rm(temporary, { force: true }); }

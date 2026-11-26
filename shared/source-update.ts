@@ -135,6 +135,7 @@ export type SourceUpdateApplyResult = {
     | 'unsupported'
     | 'non_target_branch'
     | 'dirty_worktree'
+    | 'deferred_active_work'
     | 'non_fast_forward'
     | 'up_to_date'
     | 'updated'
@@ -187,6 +188,7 @@ export type SourceUpdateOptions = {
   homeDirectory?: string;
   restartBackend?: boolean;
   exec?: ExecRunner;
+  isPidAlive?: (pid: number) => boolean;
   shutdownBackend?: (dataDirectory: string) => Promise<{ restarted: boolean; deferred: boolean }>;
 };
 
@@ -1088,6 +1090,29 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     }
 
     const previousCommit = (await runGit(exec, repoRoot, ['rev-parse', 'HEAD'], env, 5_000)).stdout.trim().toLowerCase();
+    const isPidAlive = options.isPidAlive ?? defaultIsPidAlive;
+    const deferIfActiveWork = async (remoteCommit?: string): Promise<SourceUpdateApplyResult | null> => {
+      if (!(await hasActiveWorkspaceJob(options.dataDirectory, now, isPidAlive))) return null;
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: undefined,
+        lastAttemptAt: now,
+        lastStatus: 'deferred_active_work',
+        currentCommit: previousCommit,
+        ...(remoteCommit ? { remoteCommit } : {}),
+        branch,
+        lastError: undefined,
+      }).catch(() => {});
+      return {
+        status: 'deferred_active_work',
+        updated: false,
+        reason: 'Workspace has active export or media generation work',
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+      };
+    };
+    const activeBeforeFetch = await deferIfActiveWork();
+    if (activeBeforeFetch) return activeBeforeFetch;
     const trackingRefName = `refs/remotes/${remote}/${branch}`;
     let trackingCommit: string | null = null;
     try {
@@ -1289,6 +1314,9 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
         dirtyFiles: dirtyBeforeReset,
       };
     }
+
+    const activeBeforeReset = await deferIfActiveWork(targetCommit);
+    if (activeBeforeReset) return activeBeforeReset;
 
     await runGit(exec, repoRoot, ['reset', '--hard', targetCommit], env, 30_000);
 

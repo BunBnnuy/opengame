@@ -23,6 +23,7 @@ Modes:
 Options:
   --force            Bypass the 24-hour check cooldown (for --check or --auto)
   --no-restart       Do not shut down an idle local editor daemon after updating
+  --repo DIR         Git checkout root to inspect/update (default: repository root)
   --data-dir DIR     Workspace data directory for update-check state and lock (default: MOTION_DATA_DIR or .motion-data)
   --remote NAME      Git remote to fetch from (default: ${DEFAULT_UPDATE_REMOTE})
   --branch NAME      Git branch to track (default: ${DEFAULT_UPDATE_BRANCH})
@@ -37,6 +38,7 @@ export async function runUpdateCli(argv: readonly string[] = process.argv.slice(
       auto: { type: 'boolean', default: false },
       force: { type: 'boolean', default: false },
       'no-restart': { type: 'boolean', default: false },
+      repo: { type: 'string' },
       'data-dir': { type: 'string' },
       remote: { type: 'string' },
       branch: { type: 'string' },
@@ -56,11 +58,12 @@ export async function runUpdateCli(argv: readonly string[] = process.argv.slice(
     throw new Error('Specify at most one of --apply, --check, or --auto');
   }
 
+  const targetRepoRoot = values.repo ? path.resolve(values.repo) : repoRoot;
   const dataDirectory = path.resolve(
-    values['data-dir'] || env.MOTION_DATA_DIR || path.join(repoRoot, '.motion-data'),
+    values['data-dir'] || env.MOTION_DATA_DIR || path.join(targetRepoRoot, '.motion-data'),
   );
   const common = {
-    repoRoot,
+    repoRoot: targetRepoRoot,
     dataDirectory,
     remote: values.remote,
     branch: values.branch,
