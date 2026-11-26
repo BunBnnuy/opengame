@@ -148,6 +148,7 @@ export type SourceUpdateApplyResult = {
     | 'unsupported'
     | 'non_target_branch'
     | 'dirty_worktree'
+    | 'non_fast_forward'
     | 'up_to_date'
     | 'updated'
     | 'failed_rolled_back'
@@ -316,6 +317,8 @@ export function shouldAutoUpdateForToolCall(toolName: string, args: unknown): bo
   }
 }
 
+const ERROR_BACKOFF_STATUSES = new Set(['check_failed', 'failed', 'failed_rolled_back']);
+
 export function isUpdateCheckFresh(
   state: SourceUpdateState | null,
   now: number,
@@ -323,19 +326,18 @@ export function isUpdateCheckFresh(
 ): boolean {
   if (!state) return false;
   if (
+    state.lastStatus
+    && ERROR_BACKOFF_STATUSES.has(state.lastStatus)
+    && typeof state.lastAttemptAt === 'number'
+    && Number.isFinite(state.lastAttemptAt)
+  ) {
+    return now >= state.lastAttemptAt && now - state.lastAttemptAt < Math.min(intervalMs, ERROR_RETRY_BACKOFF_MS);
+  }
+  if (
     typeof state.lastCheckedAt === 'number'
     && Number.isFinite(state.lastCheckedAt)
     && now >= state.lastCheckedAt
     && now - state.lastCheckedAt < intervalMs
-  ) {
-    return true;
-  }
-  if (
-    state.lastStatus === 'check_failed'
-    && typeof state.lastAttemptAt === 'number'
-    && Number.isFinite(state.lastAttemptAt)
-    && now >= state.lastAttemptAt
-    && now - state.lastAttemptAt < Math.min(intervalMs, ERROR_RETRY_BACKOFF_MS)
   ) {
     return true;
   }
@@ -594,6 +596,34 @@ function resolveNpmCommand(env: NodeJS.ProcessEnv): { command: string; prefixArg
   return { command: process.platform === 'win32' ? 'npm.cmd' : 'npm', prefixArgs: [] };
 }
 
+const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org';
+
+function normalizeRegistryUrl(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || !/^https?:\/\//i.test(trimmed)) return null;
+  return trimmed.replace(/\/+$/, '').toLowerCase();
+}
+
+async function readConfiguredNpmRegistry(
+  exec: ExecRunner,
+  repoRoot: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  const fromEnv = normalizeRegistryUrl(env.npm_config_registry);
+  if (fromEnv) return fromEnv;
+  const { command, prefixArgs } = resolveNpmCommand(env);
+  try {
+    const result = await exec(command, [...prefixArgs, 'config', 'get', 'registry'], {
+      cwd: repoRoot,
+      env,
+      timeout: 10_000,
+    });
+    return normalizeRegistryUrl(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
 async function runNpmCiWithFallback(
   exec: ExecRunner,
   repoRoot: string,
@@ -601,7 +631,8 @@ async function runNpmCiWithFallback(
 ): Promise<void> {
   const { command, prefixArgs } = resolveNpmCommand(env);
   const args = [...prefixArgs, 'ci', '--include=dev', '--no-audit', '--no-fund'];
-  if (env.npm_config_registry) {
+  const configuredRegistry = await readConfiguredNpmRegistry(exec, repoRoot, env);
+  if (configuredRegistry && configuredRegistry !== DEFAULT_NPM_REGISTRY) {
     await exec(command, args, { cwd: repoRoot, env, timeout: 180_000 });
     return;
   }
@@ -742,6 +773,60 @@ async function defaultShutdownIdleBackend(dataDirectory: string): Promise<{ rest
   return { restarted: false, deferred: true };
 }
 
+const BUILD_OUTPUT_RELATIVE_PATHS = [
+  'studio/build',
+  'mcp-ui/template-recommendations/build',
+  'web/inline-video.html',
+] as const;
+
+type BuildOutputBackup = {
+  target: string;
+  backup: string;
+};
+
+async function backupBuildOutputs(repoRoot: string): Promise<BuildOutputBackup[]> {
+  const backups: BuildOutputBackup[] = [];
+  const suffix = `.rollback-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  for (const rel of BUILD_OUTPUT_RELATIVE_PATHS) {
+    const target = path.join(repoRoot, rel);
+    if (!existsSync(target)) continue;
+    const backup = path.join(path.dirname(target), `.${path.basename(target)}${suffix}`);
+    await rename(target, backup);
+    backups.push({ target, backup });
+  }
+  return backups;
+}
+
+async function restoreBuildOutputs(backups: readonly BuildOutputBackup[]): Promise<void> {
+  for (const item of [...backups].reverse()) {
+    await rm(item.target, { recursive: true, force: true }).catch(() => {});
+    if (existsSync(item.backup)) {
+      await rename(item.backup, item.target).catch(() => {});
+    }
+  }
+}
+
+async function discardBuildBackups(backups: readonly BuildOutputBackup[]): Promise<void> {
+  for (const item of backups) {
+    await rm(item.backup, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function isAncestor(
+  exec: ExecRunner,
+  repoRoot: string,
+  ancestor: string,
+  descendant: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  try {
+    await runGit(exec, repoRoot, ['merge-base', '--is-ancestor', ancestor, descendant], env, 5_000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function applySourceUpdate(options: SourceUpdateOptions): Promise<SourceUpdateApplyResult> {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const env = options.env ?? process.env;
@@ -795,14 +880,74 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     }
 
     const previousCommit = (await runGit(exec, repoRoot, ['rev-parse', 'HEAD'], env, 5_000)).stdout.trim().toLowerCase();
+    const trackingRefName = `refs/remotes/${remote}/${branch}`;
+    let trackingCommit: string | null = null;
+    try {
+      trackingCommit = (await runGit(exec, repoRoot, ['rev-parse', '--verify', trackingRefName], env, 5_000)).stdout.trim().toLowerCase();
+    } catch {
+      trackingCommit = null;
+    }
+
+    if (trackingCommit && trackingCommit !== previousCommit) {
+      const behindTracking = await isAncestor(exec, repoRoot, previousCommit, trackingCommit, env);
+      if (!behindTracking) {
+        await writeUpdateState(options.dataDirectory, {
+          lastCheckedAt: now,
+          lastAttemptAt: now,
+          lastStatus: 'non_fast_forward',
+          currentCommit: previousCommit,
+          branch,
+          lastError: undefined,
+        }).catch(() => {});
+        return {
+          status: 'non_fast_forward',
+          updated: false,
+          reason: 'local_commits_ahead',
+          branch,
+          previousCommit,
+          currentCommit: previousCommit,
+        };
+      }
+    }
+
+    let isShallow = false;
+    try {
+      isShallow = (await runGit(exec, repoRoot, ['rev-parse', '--is-shallow-repository'], env, 5_000)).stdout.trim() === 'true';
+    } catch {
+      isShallow = false;
+    }
 
     try {
-      await runGit(exec, repoRoot, ['fetch', '--depth', '1', '--no-tags', remote, branch], env, 60_000);
+      if (isShallow) {
+        let fetchedWithSince = false;
+        try {
+          const tsRaw = (await runGit(exec, repoRoot, ['show', '-s', '--format=%ct', 'HEAD'], env, 5_000)).stdout.trim();
+          const ts = Number(tsRaw);
+          if (Number.isFinite(ts) && ts > 60) {
+            await runGit(
+              exec,
+              repoRoot,
+              ['fetch', `--shallow-since=@${Math.floor(ts) - 60}`, '--no-tags', remote, branch],
+              env,
+              60_000,
+            );
+            fetchedWithSince = true;
+          }
+        } catch {
+          fetchedWithSince = false;
+        }
+        if (!fetchedWithSince) {
+          await runGit(exec, repoRoot, ['fetch', '--depth', '1', '--no-tags', remote, branch], env, 60_000);
+        }
+      } else {
+        await runGit(exec, repoRoot, ['fetch', '--no-tags', remote, branch], env, 60_000);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: undefined,
         lastAttemptAt: now,
-        lastStatus: 'check_failed',
+        lastStatus: 'failed',
         currentCommit: previousCommit,
         branch,
         lastError: message.slice(0, 500),
@@ -837,6 +982,27 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       };
     }
 
+    const fastForward = await isAncestor(exec, repoRoot, previousCommit, targetCommit, env);
+    if (!fastForward) {
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: now,
+        lastAttemptAt: now,
+        lastStatus: 'non_fast_forward',
+        currentCommit: previousCommit,
+        remoteCommit: targetCommit,
+        branch,
+        lastError: undefined,
+      }).catch(() => {});
+      return {
+        status: 'non_fast_forward',
+        updated: false,
+        reason: 'diverged_from_remote',
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+      };
+    }
+
     let changedFiles: string[] = [];
     try {
       const diffResult = await runGit(exec, repoRoot, ['diff', '--name-only', previousCommit, targetCommit], env, 10_000);
@@ -852,6 +1018,7 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     let depsInstalled = false;
     let depsAttempted = false;
     let studioRebuilt = false;
+    let buildBackups: BuildOutputBackup[] = [];
     try {
       const buildState = await loadBuildStateModule(repoRoot);
       const needDeps = buildState
@@ -875,8 +1042,11 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       }
 
       if (needStudioBuild) {
+        buildBackups = await backupBuildOutputs(repoRoot);
         await runStudioBuild(exec, repoRoot, env);
         studioRebuilt = true;
+        await discardBuildBackups(buildBackups);
+        buildBackups = [];
         if (buildState) await buildState.recordSourceBuild(repoRoot).catch(() => {});
       }
     } catch (error) {
@@ -884,14 +1054,24 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       let rolledBack = false;
       try {
         await runGit(exec, repoRoot, ['reset', '--hard', previousCommit], env, 30_000);
-        if (depsAttempted && !existsSync(path.join(repoRoot, 'node_modules/.package-lock.json'))) {
-          await runNpmCiWithFallback(exec, repoRoot, env).catch(() => {});
+        const restoredBuildState = await loadBuildStateModule(repoRoot).catch(() => null);
+        if (depsAttempted) {
+          await runNpmCiWithFallback(exec, repoRoot, env);
+          if (restoredBuildState) await restoredBuildState.recordDependencies(repoRoot).catch(() => {});
+        }
+        if (buildBackups.length > 0) {
+          await restoreBuildOutputs(buildBackups);
+          buildBackups = [];
+          if (restoredBuildState && existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'))) {
+            await restoredBuildState.recordSourceBuild(repoRoot).catch(() => {});
+          }
         }
         rolledBack = true;
       } catch {
         rolledBack = false;
       }
       await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: undefined,
         lastAttemptAt: now,
         lastStatus: rolledBack ? 'failed_rolled_back' : 'failed',
         currentCommit: rolledBack ? previousCommit : targetCommit,
@@ -909,6 +1089,8 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
         error: message,
       };
     }
+
+    await runGit(exec, repoRoot, ['update-ref', trackingRefName, targetCommit], env, 5_000).catch(() => {});
 
     const syncedSkills = await syncInstalledHostSkills(repoRoot, {
       homeDirectory: options.homeDirectory,
@@ -958,16 +1140,24 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
 export async function maybeAutoUpdateBeforeCreation(
   options: SourceUpdateOptions,
 ): Promise<SourceUpdateCheckResult | SourceUpdateApplyResult> {
+  const now = (options.now ?? Date.now)();
   try {
-    const check = await checkSourceUpdate({ ...options, automatic: true });
+    const check = await checkSourceUpdate({ ...options, automatic: true, now: () => now });
     if (check.status !== 'update_available') return check;
-    return await applySourceUpdate({ ...options, automatic: true });
+    return await applySourceUpdate({ ...options, automatic: true, now: () => now });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeUpdateState(options.dataDirectory, {
+      lastCheckedAt: undefined,
+      lastAttemptAt: now,
+      lastStatus: 'failed',
+      lastError: message.slice(0, 500),
+    }).catch(() => {});
     return {
       status: 'check_failed',
       checked: false,
       updateAvailable: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     };
   }
 }

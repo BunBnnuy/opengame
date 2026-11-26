@@ -117,8 +117,13 @@ async function createGitFixtures(t: any) {
   return { root, remoteBare, upstreamWork, checkout, dataDir, fakeHome, commitUpstream };
 }
 
-function createTrackingExec(options: { failOnNpmRun?: boolean; failOnLsRemote?: boolean } = {}) {
+function createTrackingExec(options: {
+  failOnNpmRun?: boolean;
+  failOnLsRemote?: boolean;
+  configuredRegistry?: string;
+} = {}) {
   const npmCalls: string[][] = [];
+  const npmRegistries: Array<string | undefined> = [];
   const gitCalls: string[][] = [];
   const exec: ExecRunner = async (file, args, opts) => {
     const isGit = file === 'git';
@@ -133,7 +138,11 @@ function createTrackingExec(options: { failOnNpmRun?: boolean; failOnLsRemote?: 
     }
     if (isNpm) {
       const normalized = args[0]?.endsWith('.js') ? args.slice(1) : [...args];
+      if (normalized[0] === 'config' && normalized[1] === 'get' && normalized[2] === 'registry') {
+        return { stdout: (options.configuredRegistry ?? 'https://registry.npmjs.org/') + '\n', stderr: '' };
+      }
       npmCalls.push(normalized);
+      npmRegistries.push(opts?.env?.npm_config_registry);
       if (normalized[0] === 'ci') {
         await mkdir(path.join(opts!.cwd!, 'node_modules'), { recursive: true });
         const lock = await readFile(path.join(opts!.cwd!, 'package-lock.json'), 'utf8');
@@ -141,6 +150,8 @@ function createTrackingExec(options: { failOnNpmRun?: boolean; failOnLsRemote?: 
         return { stdout: 'npm ci ok', stderr: '' };
       }
       if (normalized[0] === 'run' && normalized[1] === 'build:studio') {
+        // Mirror Vite emptyOutDir: true deleting previous outputs before failing.
+        await rm(path.join(opts!.cwd!, 'studio/build'), { recursive: true, force: true });
         if (options.failOnNpmRun) throw new Error('Vite build exploded');
         await mkdir(path.join(opts!.cwd!, 'studio/build'), { recursive: true });
         await writeFile(path.join(opts!.cwd!, 'studio/build/index.html'), '<html>rebuilt</html>');
@@ -149,7 +160,7 @@ function createTrackingExec(options: { failOnNpmRun?: boolean; failOnLsRemote?: 
     }
     throw new Error(`Unexpected command: ${file} ${args.join(' ')}`);
   };
-  return { exec, npmCalls, gitCalls };
+  return { exec, npmCalls, npmRegistries, gitCalls };
 }
 
 test('classifyChangedFiles accurately flags skill, MCP schema, Studio build, and lockfile changes', () => {
@@ -450,10 +461,14 @@ test('incremental rebuild runs build:studio on Studio changes and npm ci + build
   assert.deepEqual(tracker.npmCalls[2], ['run', 'build:studio']);
 });
 
-test('build failure rolls back checkout automatically to previousCommit', async t => {
+test('build failure rolls back checkout, restores dependencies for previous lockfile, and restores studio/build outputs', async t => {
   const { checkout, dataDir, commitUpstream } = await createGitFixtures(t);
   const beforeCommit = await runGit(checkout, ['rev-parse', 'HEAD']);
-  await commitUpstream({ 'studio/src/app.ts': 'export const v = 999; // broken build\n' }, 'Broken Studio update');
+  const beforeLock = await readFile(path.join(checkout, 'package-lock.json'), 'utf8');
+  await commitUpstream({
+    'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/demo': { version: '2.0.0', integrity: 'sha512-broken' } } }),
+    'studio/src/app.ts': 'export const v = 999; // broken build\n',
+  }, 'Broken Studio + deps update');
 
   const tracker = createTrackingExec({ failOnNpmRun: true });
   const result = await applySourceUpdate({
@@ -470,6 +485,157 @@ test('build failure rolls back checkout automatically to previousCommit', async 
   assert.equal(result.currentCommit, beforeCommit);
   assert.equal(await runGit(checkout, ['rev-parse', 'HEAD']), beforeCommit);
   assert.match(await readFile(path.join(checkout, 'studio/src/app.ts'), 'utf8'), /export const v = 1;/);
+  // Dependencies were reinstalled for the restored lockfile and previous studio/build was restored.
+  assert.equal(await readFile(path.join(checkout, 'node_modules/.package-lock.json'), 'utf8'), beforeLock);
+  assert.equal(await readFile(path.join(checkout, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
+  assert.equal(tracker.npmCalls.filter(call => call[0] === 'ci').length, 2);
+});
+
+test('local commits on main are never overwritten (non_fast_forward guard)', async t => {
+  const { checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+  const tracker = createTrackingExec();
+
+  // Add a local commit on main and also advance origin/main.
+  await writeFile(path.join(checkout, 'local-note.txt'), 'my unpushed work\n');
+  await runGit(checkout, ['add', 'local-note.txt']);
+  await runGit(checkout, ['commit', '-m', 'Local commit on main']);
+  const localCommit = await runGit(checkout, ['rev-parse', 'HEAD']);
+
+  await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 5;\n' }, 'Upstream commit');
+
+  const result = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec: tracker.exec,
+    restartBackend: false,
+  });
+
+  assert.equal(result.status, 'non_fast_forward');
+  assert.equal(result.updated, false);
+  assert.equal(await runGit(checkout, ['rev-parse', 'HEAD']), localCommit);
+  assert.equal(await readFile(path.join(checkout, 'local-note.txt'), 'utf8'), 'my unpushed work\n');
+});
+
+test('complete clones stay complete while file:// shallow clones stay fast-forward verifiable across multiple commits', async t => {
+  const { root, remoteBare, checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+  const tracker = createTrackingExec();
+
+  // 1) Complete clone remains non-shallow after updating.
+  assert.equal(await runGit(checkout, ['rev-parse', '--is-shallow-repository']), 'false');
+  await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 2;\n' }, 'Commit 2');
+  const fullTarget = await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 3;\n' }, 'Commit 3');
+  const fullRes = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec: tracker.exec,
+    restartBackend: false,
+  });
+  assert.equal(fullRes.status, 'updated');
+  assert.equal(fullRes.currentCommit, fullTarget);
+  assert.equal(await runGit(checkout, ['rev-parse', '--is-shallow-repository']), 'false');
+
+  // 2) Real file:// shallow clone fast-forwards across multiple upstream commits.
+  const shallowCheckout = path.join(root, 'shallow-checkout');
+  const shallowData = path.join(root, 'shallow-data');
+  await mkdir(shallowData, { recursive: true });
+  await runGit(root, ['clone', '--depth', '1', '--single-branch', '--branch', 'main', `file://${remoteBare}`, shallowCheckout]);
+  assert.equal(await runGit(shallowCheckout, ['rev-parse', '--is-shallow-repository']), 'true');
+  await mkdir(path.join(shallowCheckout, 'node_modules/demo'), { recursive: true });
+  await writeFile(path.join(shallowCheckout, 'node_modules/.package-lock.json'), await readFile(path.join(shallowCheckout, 'package-lock.json'), 'utf8'));
+  await mkdir(path.join(shallowCheckout, 'studio/build'), { recursive: true });
+  await writeFile(path.join(shallowCheckout, 'studio/build/index.html'), '<html>v3</html>');
+
+  await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 4;\n' }, 'Commit 4');
+  const shallowTarget = await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 5;\n' }, 'Commit 5');
+  const shallowRes = await applySourceUpdate({
+    repoRoot: shallowCheckout,
+    dataDirectory: shallowData,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec: tracker.exec,
+    restartBackend: false,
+  });
+  assert.equal(shallowRes.status, 'updated');
+  assert.equal(shallowRes.currentCommit, shallowTarget);
+});
+
+test('custom npm registry configured in .npmrc is respected without overriding to npmmirror', async t => {
+  const { checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+  const tracker = createTrackingExec({ configuredRegistry: 'https://npm.corp.internal/' });
+  await commitUpstream({
+    'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/demo': { version: '2.0.0', integrity: 'sha512-corp' } } }),
+  }, 'Update lockfile');
+
+  const env = { ...process.env, OPENMOTION_AUTO_UPDATE: '1' };
+  delete env.npm_config_registry;
+  const result = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    env,
+    exec: tracker.exec,
+    restartBackend: false,
+  });
+  assert.equal(result.status, 'updated');
+  assert.equal(result.depsInstalled, true);
+  assert.equal(tracker.npmCalls.filter(call => call[0] === 'ci').length, 1);
+  // Registry env override must stay undefined so npm uses the configured .npmrc registry.
+  assert.equal(tracker.npmRegistries[0], undefined);
+});
+
+test('failed apply backs off for 1 hour (ERROR_RETRY_BACKOFF_MS) instead of full 24-hour TTL', async t => {
+  const { checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+  await commitUpstream({ 'studio/src/app.ts': 'export const v = 999;\n' }, 'Broken Studio');
+
+  let clock = 1_764_000_000_000;
+  const env = { ...process.env, OPENMOTION_AUTO_UPDATE: '1' };
+  const failing = createTrackingExec({ failOnNpmRun: true });
+
+  const first = await maybeAutoUpdateBeforeCreation({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    now: () => clock,
+    env,
+    exec: failing.exec,
+    restartBackend: false,
+  });
+  assert.equal(first.status, 'failed_rolled_back');
+
+  // Within 1h backoff: skipped.
+  clock += ERROR_RETRY_BACKOFF_MS - 1_000;
+  const withinBackoff = await maybeAutoUpdateBeforeCreation({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    now: () => clock,
+    env,
+    exec: failing.exec,
+    restartBackend: false,
+  });
+  assert.equal(withinBackoff.status, 'skipped_ttl');
+
+  // After 1h (still well under 24h TTL): retries and succeeds once build works.
+  clock += 2_000;
+  const fixed = createTrackingExec({ failOnNpmRun: false });
+  const retried = await maybeAutoUpdateBeforeCreation({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    now: () => clock,
+    env,
+    exec: fixed.exec,
+    restartBackend: false,
+  });
+  assert.equal(retried.status, 'updated');
+});
+
+test('npm run update script allows passing --check without conflicting with default apply mode', async () => {
+  const pkg = JSON.parse(await readFile(path.join(repoSourceRoot, 'package.json'), 'utf8'));
+  assert.equal(pkg.scripts.update, 'node --experimental-strip-types scripts/update.ts');
+  const { stdout } = await execFileAsync(process.execPath, ['--experimental-strip-types', 'scripts/update.ts', '--check'], {
+    cwd: repoSourceRoot,
+    timeout: 10_000,
+  });
+  const parsed = JSON.parse(stdout);
+  assert.equal(typeof parsed.status, 'string');
 });
 
 test('transient network error during check backs off for 1 hour instead of stalling every call', async t => {
