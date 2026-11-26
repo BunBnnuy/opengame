@@ -827,6 +827,121 @@ test('HTTP /motion-api/update/status and /motion-api/update/apply reject cross-s
   assert.equal(applyJson.restartRequired, false);
 });
 
+test('rollback restores studio/build and leaves no untracked .rollback-* leftovers even when rollback npm ci fails', async t => {
+  const { checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+  const beforeCommit = await runGit(checkout, ['rev-parse', 'HEAD']);
+  await commitUpstream({
+    'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/demo': { version: '2.0.0', integrity: 'sha512-broken' } } }),
+    'studio/src/app.ts': 'export const v = 999;\n',
+  }, 'Broken update with failing rollback reinstall');
+
+  let ciAttempts = 0;
+  const exec: ExecRunner = async (file, args, opts) => {
+    if (file === 'git') {
+      const res = await execFileAsync(file, [...args], { cwd: opts?.cwd, env: opts?.env, timeout: opts?.timeout });
+      return { stdout: String(res.stdout ?? ''), stderr: String(res.stderr ?? '') };
+    }
+    const normalized = args[0]?.endsWith('.js') ? args.slice(1) : [...args];
+    if (normalized[0] === 'config' && normalized[1] === 'get' && normalized[2] === 'registry') {
+      return { stdout: 'https://npm.corp.internal/\n', stderr: '' };
+    }
+    if (normalized[0] === 'ci') {
+      ciAttempts++;
+      if (ciAttempts === 1) {
+        const lock = await readFile(path.join(opts!.cwd!, 'package-lock.json'), 'utf8');
+        await writeFile(path.join(opts!.cwd!, 'node_modules/.package-lock.json'), lock);
+        return { stdout: 'ok', stderr: '' };
+      }
+      throw new Error('registry temporarily unreachable during rollback');
+    }
+    if (normalized[0] === 'run' && normalized[1] === 'build:studio') {
+      await rm(path.join(opts!.cwd!, 'studio/build'), { recursive: true, force: true });
+      throw new Error('Vite build failed');
+    }
+    throw new Error(`Unexpected command: ${file} ${args.join(' ')}`);
+  };
+
+  const result = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec,
+    restartBackend: false,
+  });
+
+  assert.equal(result.status, 'failed_rolled_back');
+  assert.equal(result.rolledBack, true);
+  assert.equal(result.currentCommit, beforeCommit);
+  assert.equal(await runGit(checkout, ['rev-parse', 'HEAD']), beforeCommit);
+  // Studio build is restored and worktree stays clean (no leftover .rollback-* untracked dirs).
+  assert.equal(await readFile(path.join(checkout, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
+  assert.equal(await runGit(checkout, ['status', '--porcelain=v1', '--untracked-files=all']), '');
+  const state = await readUpdateState(dataDir);
+  assert.equal(state?.currentCommit, beforeCommit);
+  assert.equal(state?.lastStatus, 'failed_rolled_back');
+});
+
+test('shallow fetch fallback preserves ancestry proof and non-1 merge-base errors return retryable failed instead of non_fast_forward', async t => {
+  const { root, remoteBare, checkout, dataDir, commitUpstream } = await createGitFixtures(t);
+
+  // 1) Shallow clone where --shallow-since is rejected falls back to --unshallow and still succeeds.
+  const shallowCheckout = path.join(root, 'shallow-unshallow');
+  const shallowData = path.join(root, 'shallow-unshallow-data');
+  await mkdir(shallowData, { recursive: true });
+  await runGit(root, ['clone', '--depth', '1', '--single-branch', '--branch', 'main', `file://${remoteBare}`, shallowCheckout]);
+  await mkdir(path.join(shallowCheckout, 'node_modules/demo'), { recursive: true });
+  await writeFile(path.join(shallowCheckout, 'node_modules/.package-lock.json'), await readFile(path.join(shallowCheckout, 'package-lock.json'), 'utf8'));
+  await mkdir(path.join(shallowCheckout, 'studio/build'), { recursive: true });
+  await writeFile(path.join(shallowCheckout, 'studio/build/index.html'), '<html>v1</html>');
+
+  await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 10;\n' }, 'Commit 10');
+  const targetCommit = await commitUpstream({ 'game-projects.ts': 'export const gameVersion = 11;\n' }, 'Commit 11');
+
+  const unshallowTracker: string[][] = [];
+  const execRejectSince: ExecRunner = async (file, args, opts) => {
+    if (file === 'git') {
+      unshallowTracker.push([...args]);
+      if (args.some(arg => arg.startsWith('--shallow-since='))) {
+        throw new Error('fatal: server does not support shallow-since');
+      }
+      const res = await execFileAsync(file, [...args], { cwd: opts?.cwd, env: opts?.env, timeout: opts?.timeout });
+      return { stdout: String(res.stdout ?? ''), stderr: String(res.stderr ?? '') };
+    }
+    throw new Error(`Unexpected non-git command: ${file}`);
+  };
+
+  const shallowRes = await applySourceUpdate({
+    repoRoot: shallowCheckout,
+    dataDirectory: shallowData,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec: execRejectSince,
+    restartBackend: false,
+  });
+  assert.equal(shallowRes.status, 'updated');
+  assert.equal(shallowRes.currentCommit, targetCommit);
+  assert.ok(unshallowTracker.some(args => args.includes('--unshallow')));
+
+  // 2) merge-base --is-ancestor exiting with non-1 error returns retryable failed (no lastCheckedAt).
+  const execMergeBaseTimeout: ExecRunner = async (file, args, opts) => {
+    if (file === 'git' && args.includes('--is-ancestor')) {
+      throw Object.assign(new Error('ETIMEDOUT'), { code: 'ETIMEDOUT' });
+    }
+    const res = await execFileAsync(file, [...args], { cwd: opts?.cwd, env: opts?.env, timeout: opts?.timeout });
+    return { stdout: String(res.stdout ?? ''), stderr: String(res.stderr ?? '') };
+  };
+  const errRes = await applySourceUpdate({
+    repoRoot: checkout,
+    dataDirectory: dataDir,
+    env: { ...process.env, OPENMOTION_AUTO_UPDATE: '1' },
+    exec: execMergeBaseTimeout,
+    restartBackend: false,
+  });
+  assert.equal(errRes.status, 'failed');
+  const persisted = await readUpdateState(dataDir);
+  assert.equal(persisted?.lastStatus, 'failed');
+  assert.equal(persisted?.lastCheckedAt, undefined);
+});
+
 test('syncInstalledHostSkills does not create missing host directories', async t => {
   const { checkout, fakeHome } = await createGitFixtures(t);
   const synced = await syncInstalledHostSkills(checkout, { homeDirectory: fakeHome, env: {} });

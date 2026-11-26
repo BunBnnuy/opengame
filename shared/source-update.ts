@@ -822,8 +822,12 @@ async function isAncestor(
   try {
     await runGit(exec, repoRoot, ['merge-base', '--is-ancestor', ancestor, descendant], env, 5_000);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // git merge-base --is-ancestor exits 1 strictly when not an ancestor;
+    // any other exit code, signal, or timeout is a genuine command error.
+    const exitCode = (error as { code?: unknown }).code;
+    if (exitCode === 1) return false;
+    throw error;
   }
 }
 
@@ -889,7 +893,28 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
     }
 
     if (trackingCommit && trackingCommit !== previousCommit) {
-      const behindTracking = await isAncestor(exec, repoRoot, previousCommit, trackingCommit, env);
+      let behindTracking: boolean;
+      try {
+        behindTracking = await isAncestor(exec, repoRoot, previousCommit, trackingCommit, env);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await writeUpdateState(options.dataDirectory, {
+          lastCheckedAt: undefined,
+          lastAttemptAt: now,
+          lastStatus: 'failed',
+          currentCommit: previousCommit,
+          branch,
+          lastError: message.slice(0, 500),
+        }).catch(() => {});
+        return {
+          status: 'failed',
+          updated: false,
+          branch,
+          previousCommit,
+          currentCommit: previousCommit,
+          error: message,
+        };
+      }
       if (!behindTracking) {
         await writeUpdateState(options.dataDirectory, {
           lastCheckedAt: now,
@@ -937,7 +962,9 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
           fetchedWithSince = false;
         }
         if (!fetchedWithSince) {
-          await runGit(exec, repoRoot, ['fetch', '--depth', '1', '--no-tags', remote, branch], env, 60_000);
+          // Do not fall back to --depth 1, which severs ancestry and causes
+          // legitimate fast-forwards to be misclassified as non_fast_forward.
+          await runGit(exec, repoRoot, ['fetch', '--unshallow', '--no-tags', remote, branch], env, 60_000);
         }
       } else {
         await runGit(exec, repoRoot, ['fetch', '--no-tags', remote, branch], env, 60_000);
@@ -982,7 +1009,29 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       };
     }
 
-    const fastForward = await isAncestor(exec, repoRoot, previousCommit, targetCommit, env);
+    let fastForward: boolean;
+    try {
+      fastForward = await isAncestor(exec, repoRoot, previousCommit, targetCommit, env);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await writeUpdateState(options.dataDirectory, {
+        lastCheckedAt: undefined,
+        lastAttemptAt: now,
+        lastStatus: 'failed',
+        currentCommit: previousCommit,
+        remoteCommit: targetCommit,
+        branch,
+        lastError: message.slice(0, 500),
+      }).catch(() => {});
+      return {
+        status: 'failed',
+        updated: false,
+        branch,
+        previousCommit,
+        currentCommit: previousCommit,
+        error: message,
+      };
+    }
     if (!fastForward) {
       await writeUpdateState(options.dataDirectory, {
         lastCheckedAt: now,
@@ -1051,41 +1100,55 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      let rolledBack = false;
+      let gitRolledBack = false;
       try {
         await runGit(exec, repoRoot, ['reset', '--hard', previousCommit], env, 30_000);
-        const restoredBuildState = await loadBuildStateModule(repoRoot).catch(() => null);
-        if (depsAttempted) {
-          await runNpmCiWithFallback(exec, repoRoot, env);
-          if (restoredBuildState) await restoredBuildState.recordDependencies(repoRoot).catch(() => {});
-        }
-        if (buildBackups.length > 0) {
+        gitRolledBack = true;
+      } catch {
+        gitRolledBack = false;
+      }
+
+      // Always restore backed-up build outputs (or discard backups if git reset failed)
+      // regardless of whether dependency reinstall succeeds, so no untracked .rollback-*
+      // directories or missing studio/build outputs are ever left behind.
+      const restoredBuildState = gitRolledBack ? await loadBuildStateModule(repoRoot).catch(() => null) : null;
+      if (buildBackups.length > 0) {
+        if (gitRolledBack) {
           await restoreBuildOutputs(buildBackups);
-          buildBackups = [];
           if (restoredBuildState && existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'))) {
             await restoredBuildState.recordSourceBuild(repoRoot).catch(() => {});
           }
+        } else {
+          await discardBuildBackups(buildBackups);
         }
-        rolledBack = true;
-      } catch {
-        rolledBack = false;
+        buildBackups = [];
       }
+
+      if (gitRolledBack && depsAttempted) {
+        try {
+          await runNpmCiWithFallback(exec, repoRoot, env);
+          if (restoredBuildState) await restoredBuildState.recordDependencies(repoRoot).catch(() => {});
+        } catch {
+          // Best-effort dependency restore: git HEAD and build outputs are already recovered.
+        }
+      }
+
       await writeUpdateState(options.dataDirectory, {
         lastCheckedAt: undefined,
         lastAttemptAt: now,
-        lastStatus: rolledBack ? 'failed_rolled_back' : 'failed',
-        currentCommit: rolledBack ? previousCommit : targetCommit,
+        lastStatus: gitRolledBack ? 'failed_rolled_back' : 'failed',
+        currentCommit: gitRolledBack ? previousCommit : targetCommit,
         remoteCommit: targetCommit,
         branch,
         lastError: message.slice(0, 500),
       }).catch(() => {});
       return {
-        status: rolledBack ? 'failed_rolled_back' : 'failed',
+        status: gitRolledBack ? 'failed_rolled_back' : 'failed',
         updated: false,
-        rolledBack,
+        rolledBack: gitRolledBack,
         branch,
         previousCommit,
-        currentCommit: rolledBack ? previousCommit : targetCommit,
+        currentCommit: gitRolledBack ? previousCommit : targetCommit,
         error: message,
       };
     }
