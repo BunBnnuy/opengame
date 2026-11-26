@@ -261,7 +261,9 @@ async function inventory(root: string, prefix = ''): Promise<{ path: string; byt
   return result.sort((a, b) => a.path.localeCompare(b.path));
 }
 function inferStyleFromPrompt(prompt: string): GameStyle | null {
-  if (/(?:非\s*3d|不要\s*3d|不用\s*3d|别用\s*3d|not\s+3d|no\s+3d|non-?3d)/i.test(prompt)) return null;
+  if (/(?:(?:非|不要|不用|别用|别做|不做|无需)\s*(?:用|使用|做|采用)?\s*(?:3d|three\.?js|webgl|三维)|(?:not|no|without|avoid|skip|don['’]t\s+use|do\s+not\s+use|non-?)\s*(?:3d|three\.?js|webgl))/i.test(prompt)) {
+    return null;
+  }
   if (/(?<![A-Za-z0-9])(?:3d|three\.?js|webgl)(?![A-Za-z0-9])|三维/i.test(prompt)) return '3d';
   return null;
 }

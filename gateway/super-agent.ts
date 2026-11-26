@@ -168,6 +168,7 @@ interface ActiveSuperAgentChat {
   touchedDesignIds?: Set<string>;
   touchedMotionIds?: Set<string>;
   writtenGameCodeIds?: Set<string>;
+  wroteGameFilesIds?: Set<string>;
   presentedArtifactIds?: Set<string>;
   turnUserMessageId?: string;
   attachedDesignComments: ReadonlyArray<{ projectId?: string; commentId?: string }>;
@@ -4715,6 +4716,8 @@ export class SuperAgentConversations {
 
         let wroteRunnableCode = false;
         if (name === 'openmotion_game_write_files') {
+          active.wroteGameFilesIds ??= new Set();
+          active.wroteGameFilesIds.add(gameId);
           const argFiles = Array.isArray(args.files)
             ? args.files
               .map(entry => (entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string'
@@ -4829,18 +4832,20 @@ export class SuperAgentConversations {
         const artifactId = `game:${gameId}`;
         const existing = active.chat.artifacts.find(item => item.id === artifactId);
         const wroteRunnable = Boolean(active.writtenGameCodeIds?.has(gameId));
+        const wroteAnyFiles = Boolean(active.wroteGameFilesIds?.has(gameId));
         const alreadyPresentedThisTurn = Boolean(active.presentedArtifactIds?.has(artifactId));
         let game = await games.get(gameId).catch(() => null);
         if (!game) continue;
-        // Promote workspace games left in `building` (e.g. after late doc writes or omitted set_status) once the turn completes cleanly.
-        if (game.source === 'mine' && game.status === 'building' && (wroteRunnable || alreadyPresentedThisTurn || existing)) {
+        // Promote workspace games left in `building` only when this turn wrote runnable code, explicitly presented the game, or wrote follow-up files to an existing delivered game.
+        if (game.source === 'mine' && game.status === 'building' && (wroteRunnable || alreadyPresentedThisTurn || (wroteAnyFiles && Boolean(existing)))) {
           game = await games.status(gameId, 'ready').catch(() => game);
         }
         if (!wroteRunnable && existing && existing.revision === String(game.updatedAt || '')) continue;
         const isReady = game.status === 'ready' || game.status === 'published';
         if (!wroteRunnable && !isReady) continue;
         if (alreadyPresentedThisTurn && existing?.revision === String(game.updatedAt || '')) continue;
-        const artifact = await this.resolvePresentedArtifact({ kind: 'game-project', projectId: gameId }).catch(() => null);
+        const preservedTitle = existing?.title && existing.title !== 'Game Project' ? existing.title : undefined;
+        const artifact = await this.resolvePresentedArtifact({ kind: 'game-project', projectId: gameId, title: preservedTitle }).catch(() => null);
         if (artifact) {
           this.presentChatArtifactSync(active, artifact);
         }

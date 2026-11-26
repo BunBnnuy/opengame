@@ -3828,22 +3828,40 @@ test('Super Agent ignores read-only openmotion_game_get on unrelated ready games
       this.onNotification = onNotification;
     }
 
+    private static turnCount = 0;
+
     async request(method: string) {
       if (method === 'initialize') return {};
-      if (method === 'thread/start') return { thread: { id: 'thread-game-leak-1' } };
+      if (method === 'thread/start' || method === 'thread/resume') return { thread: { id: 'thread-game-leak-1' } };
       if (method === 'turn/start') {
+        GameLeakAndStatusRpc.turnCount += 1;
+        if (GameLeakAndStatusRpc.turnCount === 1) {
+          queueMicrotask(() => {
+            this.onNotification({
+              id: 301,
+              method: 'item/tool/call',
+              params: {
+                callId: 'gl-1',
+                tool: 'openmotion_game_set_status',
+                arguments: { id: targetId, status: 'building' },
+              },
+            });
+          });
+          return { turn: { id: 'turn-game-leak-1' } };
+        }
+        // Turn 2: strictly read-only inspection of the target game while it is in `building`.
         queueMicrotask(() => {
           this.onNotification({
-            id: 301,
+            id: 401,
             method: 'item/tool/call',
             params: {
-              callId: 'gl-1',
-              tool: 'openmotion_game_set_status',
-              arguments: { id: targetId, status: 'building' },
+              callId: 'gl-ro-1',
+              tool: 'openmotion_game_get',
+              arguments: { id: targetId },
             },
           });
         });
-        return { turn: { id: 'turn-game-leak-1' } };
+        return { turn: { id: 'turn-game-leak-2' } };
       }
       return {};
     }
@@ -3927,6 +3945,18 @@ test('Super Agent ignores read-only openmotion_game_get on unrelated ready games
           });
         });
       }
+      if (payload.id === 401) {
+        queueMicrotask(() => {
+          this.onNotification({
+            method: 'item/completed',
+            params: { item: { id: 'msg-gl-2', type: 'agentMessage', text: 'Checked current game metadata.' } },
+          });
+          this.onNotification({
+            method: 'turn/completed',
+            params: { turn: { id: 'turn-game-leak-2', status: 'completed' } },
+          });
+        });
+      }
     }
 
     close() {
@@ -3968,10 +3998,35 @@ test('Super Agent ignores read-only openmotion_game_get on unrelated ready games
     assert.equal(done.artifacts.some(item => item.projectId === refId || item.id === `game:${refId}`), false);
     const targetArtifact = done.artifacts.find(item => item.projectId === targetId);
     assert.ok(targetArtifact);
-    // Target game must be promoted out of building -> ready when the turn finishes cleanly.
+    // Target game must be promoted out of building -> ready when the turn finishes cleanly, preserving custom title.
     const finalGame = await games.get(targetId);
     assert.equal(finalGame.status, 'ready');
     assert.equal(targetArtifact.revision, finalGame.updatedAt);
+    assert.equal(targetArtifact.title, 'Rain Temple · Play');
+
+    // A subsequent read-only turn on a `building` game must neither promote it to ready nor re-present/overwrite its title.
+    await games.status(targetId, 'building');
+    const prevPresentedAt = targetArtifact.presentedAt;
+    await service.start(chat.id, {
+      requestId: 'req-game-leak-2',
+      mode: 'game',
+      text: 'Inspect current build status',
+    }, {
+      origin: 'http://127.0.0.1:4173',
+      phase1: () => phase1,
+    });
+    for (let i = 0; i < 100; i++) {
+      const snap = await service.get(chat.id);
+      if (snap.state === 'idle' || snap.state === 'failed') break;
+      await new Promise(resolve => setTimeout(resolve, 15));
+    }
+    const afterReadOnly = await service.get(chat.id);
+    assert.equal(afterReadOnly.state, 'idle');
+    assert.equal((await games.get(targetId)).status, 'building');
+    const afterArtifact = afterReadOnly.artifacts.find(item => item.projectId === targetId);
+    assert.ok(afterArtifact);
+    assert.equal(afterArtifact.title, 'Rain Temple · Play');
+    assert.equal(afterArtifact.presentedAt, prevPresentedAt);
   } finally {
     await service.close();
   }
