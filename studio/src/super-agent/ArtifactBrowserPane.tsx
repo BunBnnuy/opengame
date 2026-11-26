@@ -2095,16 +2095,23 @@ export function ArtifactBrowserPane({
   const activeReaction = activeGameProjectId
     ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0 }
     : null;
-  const likeBusyRef = useRef(false);
+  // One like request per game at a time; other games stay clickable while it saves.
+  const [likesSaving, setLikesSaving] = useState<ReadonlySet<string>>(() => new Set());
+  const likeSaving = Boolean(activeGameProjectId && likesSaving.has(activeGameProjectId));
   const toggleGameLike = useCallback(() => {
-    if (!activeGameProjectId || !activeReaction || likeBusyRef.current) return;
-    likeBusyRef.current = true;
+    const gameId = activeGameProjectId;
+    if (!gameId || !activeReaction || likesSaving.has(gameId)) return;
+    setLikesSaving(prev => new Set(prev).add(gameId));
     const next: -1 | 0 | 1 = activeReaction.reaction === 1 ? 0 : 1;
-    void gameApi.react(activeGameProjectId, next)
+    void gameApi.react(gameId, next)
       .then(game => setGameReactions(prev => ({ ...prev, [game.id]: { reaction: game.reaction, likes: game.likes } })))
       .catch(() => onNotify?.(t('Start the local game service to save reactions.'), 'info'))
-      .finally(() => { likeBusyRef.current = false; });
-  }, [activeGameProjectId, activeReaction, onNotify, t]);
+      .finally(() => setLikesSaving(prev => {
+        const rest = new Set(prev);
+        rest.delete(gameId);
+        return rest;
+      }));
+  }, [activeGameProjectId, activeReaction, likesSaving, onNotify, t]);
 
   const webColorScheme: BrowserColorScheme = webState?.colorScheme ?? 'auto';
   const webZoom = webState?.zoom ?? 1;
@@ -3639,6 +3646,7 @@ export function ArtifactBrowserPane({
                     label={activeReaction && activeReaction.likes > 0 ? String(activeReaction.likes) : t('Like')}
                     ariaLabel={t('Like')}
                     pressed={activeReaction?.reaction === 1}
+                    disabled={likeSaving}
                     onClick={toggleGameLike}
                   />
                 )}

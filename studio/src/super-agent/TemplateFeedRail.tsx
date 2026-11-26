@@ -58,6 +58,8 @@ export function TemplateFeedStage({ feed, actions, children }: {
   }, []);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Portaled popovers (Share) bubble through React but live outside this element: leave their keys alone.
+    if (!(event.target instanceof Node) || !rootRef.current?.contains(event.target)) return;
     if (!feed || event.altKey || event.ctrlKey || event.metaKey || isEditableTarget(event.target)) return;
     const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1
       : event.key === 'ArrowDown' || event.key === 'PageDown' ? 1

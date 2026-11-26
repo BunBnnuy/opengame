@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n/I18n';
@@ -125,6 +126,28 @@ describe('TemplateFeedStage', () => {
     expect(stage.querySelector('.om-sa-template-feed-rail')).toBeNull();
     act(() => { stage.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true })); });
     act(() => { stage.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(onStep).not.toHaveBeenCalled();
+  });
+
+  it('ignores arrow keys from a portaled popover such as Share', () => {
+    const onStep = vi.fn();
+    host = document.createElement('div');
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => {
+      root!.render(
+        <I18nProvider>
+          <TemplateFeedStage
+            feed={{ position: { index: 1, total: 3, prevId: 'a', nextId: 'c' }, placement: 'side', onStep }}
+            actions={createPortal(<button type="button" className="portaled-share">Share</button>, document.body)}
+          >
+            <iframe title="game" />
+          </TemplateFeedStage>
+        </I18nProvider>,
+      );
+    });
+    const portaled = document.body.querySelector('.portaled-share')!;
+    act(() => { portaled.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
     expect(onStep).not.toHaveBeenCalled();
   });
 });
