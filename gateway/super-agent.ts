@@ -3465,10 +3465,15 @@ export class SuperAgentConversations {
         const toolArgs = rpc?.params?.arguments && typeof rpc.params.arguments === 'object' ? rpc.params.arguments : {};
         const callId = String(id ?? randomUUID());
         const requestAbort = new AbortController();
+        const socket = req.socket;
         const onResponseClose = () => {
           if (!res.writableEnded) requestAbort.abort();
         };
         res.once('close', onResponseClose);
+        socket?.once('close', onResponseClose);
+        if (res.destroyed || socket?.destroyed) {
+          onResponseClose();
+        }
         const task = (async () => {
           try {
             const value = await this.executeToolCall(active, toolName, toolArgs, callId, runtime, requestAbort.signal);
@@ -3492,6 +3497,7 @@ export class SuperAgentConversations {
             };
           } finally {
             res.off('close', onResponseClose);
+            socket?.off('close', onResponseClose);
           }
         })();
         active.inFlightTools.add(task);
@@ -4427,30 +4433,32 @@ export class SuperAgentConversations {
     if (!planFailure && !setupFailure) return undefined;
     try {
       const gateway = gatewayFor(this.store);
-      if (planFailure) {
-        const account = await gateway.account.summary(false);
-        const media = accountMediaState(account);
-        const card = extractActionCardFromTool(toolName, args, value, ok, {
-          accountPlan: media.plan,
-          accountMediaEntitlement: media.mediaEntitlement,
-        });
-        if (card) return card;
-      }
-      if (!setupFailure) return undefined;
-      const status = await gateway.status(false);
       const record = value && typeof value === 'object' ? value as Record<string, unknown> : null;
       const payload = unwrapToolPayload(value) ?? record;
       const errorText = extractActionCardErrorText(value);
-      if (isOpenDesignAccountMediaCall(args, payload, errorText)) {
-        const accountProvider = status.providers.find(p => p.id === 'account');
-        if (!accountProvider?.configured) return actionCardForProviderSetupEntry('agent_media_signed_out');
-        if (accountProvider.mediaEntitlement === 'not-included' && accountProvider.plan === 'go') {
-          return actionCardForProviderSetupEntry('agent_media_upgrade_go');
+      const isAccountCall = isOpenDesignAccountMediaCall(args, payload, errorText);
+      if (planFailure || (setupFailure && isAccountCall)) {
+        const account = await gateway.account.summary(false);
+        const media = accountMediaState(account);
+        if (planFailure) {
+          const card = extractActionCardFromTool(toolName, args, value, ok, {
+            accountPlan: media.plan,
+            accountMediaEntitlement: media.mediaEntitlement,
+          });
+          if (card) return card;
         }
-        if (accountProvider.mediaEntitlement === 'not-included' && accountProvider.plan === 'free') {
-          return actionCardForProviderSetupEntry('agent_media_upgrade_free');
+        if (setupFailure && isAccountCall) {
+          if (account.state !== 'signed-in') return actionCardForProviderSetupEntry('agent_media_signed_out');
+          if (media.mediaEntitlement === 'not-included' && media.plan === 'go') {
+            return actionCardForProviderSetupEntry('agent_media_upgrade_go');
+          }
+          if (media.mediaEntitlement === 'not-included' && media.plan === 'free') {
+            return actionCardForProviderSetupEntry('agent_media_upgrade_free');
+          }
         }
       }
+      if (!setupFailure) return undefined;
+      const status = await gateway.status(false);
       const modality = typeof args.modality === 'string' && ['image', 'video', 'audio'].includes(args.modality)
         ? args.modality as Modality
         : undefined;
