@@ -756,7 +756,7 @@ export const defaultCapabilities: readonly CapabilityDefinition[] = [
   {
     id: '3d-asset',
     title: '3D asset generation',
-    summary: 'Generate textured 3D mesh assets (.glb) from text or product reference images.',
+    summary: 'Generate PBR textured 3D mesh assets (.glb) from a clean isolated concept image (preferred) or text. Allocate 3D budget first to P0 near-camera focal subjects (player hero/vehicle, primary boss/rival, signature weapon) and 1–2 reusable foreground props rather than peripheral background decor.',
     modality: '3d',
     category: 'generate',
     icon: 'box-3-line',
