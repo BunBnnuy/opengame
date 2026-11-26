@@ -367,7 +367,7 @@ describe('gamePublishStore', () => {
     expect(gamePublishThreadFor('chat-1').some(entry => entry.kind === 'link-failed')).toBe(false);
   });
 
-  it('deferred link persists in session across close/reopen and resolves cleanly for signed-in or guest', async () => {
+  it('deferred link persists in session across close/reopen and resolves cleanly for signed-in, guest, and Telegram', async () => {
     gamePublishActions.open(input);
     gamePublishActions.choose(input.artifactId, 'xiaohongshu', { deferLink: true });
     expect(publish).not.toHaveBeenCalled();
@@ -379,5 +379,29 @@ describe('gamePublishStore', () => {
     await settle();
     expect(publish).toHaveBeenCalledTimes(1);
     expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkDeferred: false, linkUrl: 'https://play.opendesign.app/g/abc' });
+
+    // Guest resolution on a non-Telegram platform clears linkToo/linkError and does not publish.
+    resetGamePublishStore();
+    publish.mockClear();
+    gamePublishActions.open(input);
+    gamePublishActions.choose(input.artifactId, 'xiaohongshu', { deferLink: true });
+    gamePublishActions.close(input.artifactId);
+    gamePublishActions.reopen(input.artifactId);
+    gamePublishActions.resolveDeferredLink(input.artifactId, false);
+    await settle();
+    expect(publish).not.toHaveBeenCalled();
+    expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkDeferred: false, linkToo: false, linkError: undefined });
+
+    // Guest resolution on Telegram keeps linkToo true so LinkStep offers direct sign-in.
+    resetGamePublishStore();
+    publish.mockClear();
+    gamePublishActions.open(input);
+    gamePublishActions.choose(input.artifactId, 'telegram', { deferLink: true });
+    gamePublishActions.close(input.artifactId);
+    gamePublishActions.reopen(input.artifactId);
+    gamePublishActions.resolveDeferredLink(input.artifactId, false);
+    await settle();
+    expect(publish).not.toHaveBeenCalled();
+    expect(gamePublishSessionFor(input.artifactId)).toMatchObject({ linkDeferred: false, linkToo: true });
   });
 });
