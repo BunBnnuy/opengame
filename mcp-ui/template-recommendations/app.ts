@@ -147,6 +147,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
   function refreshLabels() {
     root.lang = language();
     refreshWelcome();
+    const action = t(canPrepareDraft() ? 'clone' : 'copyPrompt');
     root.querySelector('.omtc-list')?.setAttribute('aria-label', t('listLabel'));
     for (const node of root.querySelectorAll<HTMLElement>('[data-copy-key]')) label(node, node.dataset.copyKey as CopyKey);
     for (const state of states) {
@@ -157,11 +158,11 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
       categoryLabel.textContent = category; categoryLabel.title = category; categoryLabel.hidden = !category;
       state.cover.setAttribute('aria-label', `${t('preview')} ${state.card.title}${category ? ' · ' + category : ''}`);
       state.cover.querySelector('[data-preview-label]')!.textContent = t('preview');
-      state.clone.textContent = t('clone'); state.clone.setAttribute('aria-label', `${t('clone')} ${state.card.title}`);
+      state.clone.textContent = action; state.clone.setAttribute('aria-label', `${action} ${state.card.title}`);
       state.clone.disabled = busy || !connected;
     }
     if (detail) {
-      detail.back.textContent = t('back'); detail.clone.textContent = t('clone'); detail.clone.disabled = busy || !connected;
+      detail.back.textContent = t('back'); detail.clone.textContent = action; detail.clone.disabled = busy || !connected;
       detail.video.setAttribute('aria-label', t('player'));
     }
     if (context.theme === 'dark' || context.theme === 'light') {
@@ -194,6 +195,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
     const current = detail, selected = current.selected!;
     selected.intent = current.intent;
     if (current.video.readyState >= 1 && Number.isFinite(current.video.currentTime)) selected.video.currentTime = current.video.ended ? 0 : current.video.currentTime;
+    selected.feedback.replaceChildren(...current.feedback.childNodes); selected.feedback.hidden = current.feedback.hidden;
     current.selected = undefined; expectedPause(current.video); current.section.hidden = true;
     root.querySelector<HTMLElement>('.omtc-list')!.hidden = false;
     const welcome = root.querySelector<HTMLElement>('.omtc-welcome'); if (welcome) welcome.hidden = false;
@@ -205,7 +207,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
     const current = detail, currentGeneration = generation;
     current.selected = state; current.trigger = trigger; current.intent = state.intent; current.visible = true;
     current.title.textContent = state.card.title; current.feedback.hidden = state.feedback.hidden;
-    current.feedback.textContent = state.feedback.textContent; current.status.hidden = true;
+    current.feedback.replaceChildren(...state.feedback.childNodes); current.status.hidden = true;
     current.video.poster = posterSource(state.asset);
     current.video.muted = true;
     current.video.src = state.url;
@@ -230,7 +232,26 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
     const currentGeneration = generation;
     const copy = async () => {
       const copied = await copyBrief(prompt);
-      if (!destroyed && generation === currentGeneration) showFeedback(copied ? 'copied' : 'copyFailed');
+      if (destroyed || generation !== currentGeneration) return;
+      const cardState = states.find(state => state.card === card);
+      const current = detail && detail.selected === cardState ? detail.feedback : cardState?.feedback ?? target;
+      current.hidden = copied;
+      current.replaceChildren();
+      if (copied) {
+        showFeedback('copied');
+        return;
+      }
+      actionFeedback.clear();
+      const instructions = element('p'); label(instructions, 'manual');
+      const manual = element('textarea');
+      manual.readOnly = true;
+      manual.rows = 4;
+      manual.value = prompt;
+      manual.setAttribute('aria-label', t('draftLabel'));
+      current.append(instructions, manual);
+      manual.focus();
+      manual.select();
+      manual.scrollTop = 0;
     };
     busy = true; refreshLabels();
     try {
@@ -281,7 +302,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
     const back = element('button', 'omtc-back'); back.type = 'button';
     const title = element('h2', 'omtc-detail-title'), player = element('video', 'omtc-player');
     player.controls = true; player.playsInline = true; player.muted = true; player.preload = 'metadata';
-    const mediaStatus = element('p', 'omtc-status'), clone = element('button', 'omtc-clone'), detailFeedback = element('p', 'omtc-feedback');
+    const mediaStatus = element('p', 'omtc-status'), clone = element('button', 'omtc-clone'), detailFeedback = element('div', 'omtc-feedback');
     clone.type = 'button'; mediaStatus.hidden = true; detailFeedback.hidden = true; detailFeedback.setAttribute('role', 'status');
     detailSection.append(back, title, player, mediaStatus, clone, detailFeedback); root.append(detailSection);
     detail = { section: detailSection, video: player, title, back, clone, status: mediaStatus,
@@ -321,7 +342,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
       titleButton.type = 'button'; titleButton.title = card.title; titleButton.dataset.templateTitle = '';
       heading.append(titleButton);
       const description = element('p', 'omtc-description', card.description), status = element('p', 'omtc-status', t('loading'));
-      const cloneButton = element('button', 'omtc-clone'), cardFeedback = element('p', 'omtc-feedback');
+      const cloneButton = element('button', 'omtc-clone'), cardFeedback = element('div', 'omtc-feedback');
       label(status, 'loading'); cloneButton.type = 'button'; cardFeedback.hidden = true; cardFeedback.setAttribute('role', 'status');
       info.append(heading, description, status, cloneButton, cardFeedback); article.append(cover, info); list.append(article);
       const state: CardState = { card, asset, article, video, cover, title: titleButton, clone: cloneButton, status,
