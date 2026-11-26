@@ -4073,6 +4073,14 @@ export class SuperAgentConversations {
           note: 'Model providers / OpenDesign sign-in is already surfaced through the inline action card in chat; do not present /settings/providers as a web artifact.',
         };
       }
+      if (String(rawArgs.kind) === 'game-project' && typeof rawArgs.projectId === 'string' && rawArgs.projectId.trim()) {
+        const projectId = rawArgs.projectId.trim();
+        const games = gameProjectsFor(this.store.directory);
+        const current = await games.get(projectId).catch(() => null);
+        if (current && current.source === 'mine' && current.status === 'building') {
+          await games.status(projectId, 'ready').catch(() => {});
+        }
+      }
       const artifact = await this.resolvePresentedArtifact(rawArgs);
       const stored = await this.presentChatArtifact(active, artifact);
       return { presented: true, artifact: stored };
@@ -4668,6 +4676,16 @@ export class SuperAgentConversations {
     }
 
     if (name.startsWith('openmotion_game_')) {
+      const GAME_MUTATING_TOOLS = new Set([
+        'openmotion_game_create',
+        'openmotion_game_write_files',
+        'openmotion_game_update_meta',
+        'openmotion_game_capture_cover',
+        'openmotion_game_set_status',
+        'openmotion_game_publish',
+        'openmotion_game_wechat',
+        'openmotion_game_trailer',
+      ]);
       let gameCard = value.game && typeof value.game === 'object'
         ? value.game
         : typeof value.playUrl === 'string' && typeof value.id === 'string'
@@ -4678,6 +4696,19 @@ export class SuperAgentConversations {
       }
       if (gameCard?.id) {
         const gameId = String(gameCard.id);
+        const artifactId = `game:${gameId}`;
+        const existing = active.chat.artifacts.find(item => item.id === artifactId);
+        const alreadyInChat = Boolean(existing);
+        const attachedToTurn = Boolean(
+          active.turnUserMessageId
+          && active.chat.messages
+            .find(msg => msg.id === active.turnUserMessageId)
+            ?.attachments?.some(att => att.kind === 'game-project' && att.id === gameId),
+        );
+        const isMutatingGameTool = GAME_MUTATING_TOOLS.has(name);
+        if (!isMutatingGameTool && !alreadyInChat && !attachedToTurn && !active.touchedGameIds?.has(gameId)) {
+          return undefined;
+        }
         active.touchedGameIds ??= new Set();
         active.touchedGameIds.add(gameId);
         active.chat.intent = 'game';
@@ -4712,9 +4743,6 @@ export class SuperAgentConversations {
           active.chat.title = normalizeSuperAgentTitle(gameTitle);
         }
 
-        const artifactId = `game:${gameId}`;
-        const existing = active.chat.artifacts.find(item => item.id === artifactId);
-        const alreadyInChat = Boolean(existing);
         const isReady = gameCard.status === 'ready' || gameCard.status === 'published';
         const revision = String(gameCard.updatedAt || now);
         // Preserve a localized/custom title set by openmotion_present_artifact when status transitions concurrently.
@@ -4740,7 +4768,7 @@ export class SuperAgentConversations {
         const shouldPresentNow =
           name === 'openmotion_game_publish'
           || (name === 'openmotion_game_set_status' && isReady)
-          || ((name === 'openmotion_game_create' || name === 'openmotion_game_get') && isReady && !alreadyInChat);
+          || (name === 'openmotion_game_create' && isReady && !alreadyInChat);
 
         if (shouldPresentNow) {
           if (active.presentedArtifactIds?.has(artifactId) && existing?.revision === revision) {
@@ -4792,6 +4820,7 @@ export class SuperAgentConversations {
     const initialRpc = active.rpc;
     const rpcClosePromise = closeRpcAndWait(initialRpc);
     if (!error && state === 'idle' && !active.deleted) {
+      const games = gameProjectsFor(this.store.directory);
       const candidateGameIds = new Set<string>([
         ...(active.writtenGameCodeIds ?? []),
         ...(active.touchedGameIds ?? []),
@@ -4801,9 +4830,13 @@ export class SuperAgentConversations {
         const existing = active.chat.artifacts.find(item => item.id === artifactId);
         const wroteRunnable = Boolean(active.writtenGameCodeIds?.has(gameId));
         const alreadyPresentedThisTurn = Boolean(active.presentedArtifactIds?.has(artifactId));
-        if (!wroteRunnable && existing) continue;
-        const game = await gameProjectsFor(this.store.directory).get(gameId).catch(() => null);
+        let game = await games.get(gameId).catch(() => null);
         if (!game) continue;
+        // Promote workspace games left in `building` (e.g. after late doc writes or omitted set_status) once the turn completes cleanly.
+        if (game.source === 'mine' && game.status === 'building' && (wroteRunnable || alreadyPresentedThisTurn || existing)) {
+          game = await games.status(gameId, 'ready').catch(() => game);
+        }
+        if (!wroteRunnable && existing && existing.revision === String(game.updatedAt || '')) continue;
         const isReady = game.status === 'ready' || game.status === 'published';
         if (!wroteRunnable && !isReady) continue;
         if (alreadyPresentedThisTurn && existing?.revision === String(game.updatedAt || '')) continue;
