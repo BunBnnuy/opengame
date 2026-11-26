@@ -22,9 +22,12 @@ const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 
 export async function agentInvocation(bin: string, args: string[]): Promise<{ bin: string; args: string[] }> {
   if (!/\.cmd$/i.test(bin)) return { bin, args };
   const source = await readFile(bin, 'utf8');
-  const relative = source.match(/"%(?:dp0|~dp0)%?\\([^"\r\n]+\.(?:[cm]?js))"/i)?.[1];
+  const relative = source.match(/"%(?:dp0|~dp0)%?\\([^"\r\n]+\.(?:[cm]?js|exe))"/i)?.[1];
   if (!relative || relative.includes('..') || /[%!]/.test(relative)) throw new Error('Unsupported CLI shim; use the official executable');
-  return { bin: process.execPath, args: [path.resolve(path.dirname(bin), ...relative.split('\\')), ...args] };
+  const target = path.resolve(path.dirname(bin), ...relative.split('\\'));
+  // CLIs that ship a native binary point the shim at the executable instead of a JS entry point.
+  if (/\.exe$/i.test(relative)) return { bin: target, args };
+  return { bin: process.execPath, args: [target, ...args] };
 }
 
 export const probeAgent: Probe = async (bin, args) => {

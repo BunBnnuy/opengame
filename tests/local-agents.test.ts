@@ -275,6 +275,14 @@ test('ACP discovery lists session models, denies client operations, handles asyn
 
   const shim = path.join(root, 'agent.cmd'); await writeFile(shim, '"%dp0%\\node_modules\\agent\\cli.js" %*');
   assert.deepEqual(await agentInvocation(shim, ['--version']), { bin: process.execPath, args: [path.join(root, 'node_modules/agent/cli.js'), '--version'] });
+
+  // npm shims for CLIs that ship a native binary point at the executable, not a JS entry point.
+  const nativeShim = path.join(root, 'native-agent.cmd'); await writeFile(nativeShim, '"%dp0%\\node_modules\\@native\\cli\\bin\\native-agent.exe"   %*');
+  assert.deepEqual(await agentInvocation(nativeShim, ['models']), { bin: path.join(root, 'node_modules/@native/cli/bin/native-agent.exe'), args: ['models'] });
+
+  // Chained shell shims are still refused: they cannot be spawned without a shell.
+  const chainedShim = path.join(root, 'chained.cmd'); await writeFile(chainedShim, '"%dp0%\\bin\\other.cmd" %*');
+  await assert.rejects(agentInvocation(chainedShim, []), /Unsupported CLI shim/);
 });
 
 test('Codex app-server, Claude stdio initialize and Pi RPC protocol discoverers parse live catalogs', async t => {
