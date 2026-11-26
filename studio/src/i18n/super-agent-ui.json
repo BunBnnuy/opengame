@@ -1147,7 +1147,8 @@
     "Replay": "重玩",
     "Info": "信息",
     "Game info": "游戏信息",
-    "By {author}": "作者：{author}"
+    "By {author}": "作者：{author}",
+    "Screen": "画面"
   },
   "ja": {
     "Play again": "もう一度遊ぶ",
@@ -2297,7 +2298,8 @@
     "Replay": "もう一度",
     "Info": "情報",
     "Game info": "ゲーム情報",
-    "By {author}": "作者：{author}"
+    "By {author}": "作者：{author}",
+    "Screen": "画面"
   },
   "ko": {
     "Play again": "다시 플레이",
@@ -3447,7 +3449,8 @@
     "Replay": "다시 하기",
     "Info": "정보",
     "Game info": "게임 정보",
-    "By {author}": "제작: {author}"
+    "By {author}": "제작: {author}",
+    "Screen": "화면"
   },
   "de": {
     "Play again": "Erneut spielen",
@@ -4600,7 +4603,8 @@
     "Replay": "Neu starten",
     "Info": "Info",
     "Game info": "Spielinfo",
-    "By {author}": "Von {author}"
+    "By {author}": "Von {author}",
+    "Screen": "Bildschirm"
   },
   "fr": {
     "Play again": "Rejouer",
@@ -5753,7 +5757,8 @@
     "Replay": "Rejouer",
     "Info": "Infos",
     "Game info": "Infos du jeu",
-    "By {author}": "Par {author}"
+    "By {author}": "Par {author}",
+    "Screen": "Écran"
   },
   "ru": {
     "Play again": "Сыграть ещё",
@@ -6908,7 +6913,8 @@
     "Replay": "Заново",
     "Info": "Инфо",
     "Game info": "Об игре",
-    "By {author}": "Автор: {author}"
+    "By {author}": "Автор: {author}",
+    "Screen": "Экран"
   },
   "es": {
     "Play again": "Volver a jugar",
@@ -8061,7 +8067,8 @@
     "Replay": "Reiniciar",
     "Info": "Info",
     "Game info": "Información del juego",
-    "By {author}": "Por {author}"
+    "By {author}": "Por {author}",
+    "Screen": "Pantalla"
   },
   "pt-BR": {
     "Play again": "Jogar novamente",
@@ -9214,7 +9221,8 @@
     "Replay": "Jogar de novo",
     "Info": "Info",
     "Game info": "Informações do jogo",
-    "By {author}": "Por {author}"
+    "By {author}": "Por {author}",
+    "Screen": "Tela"
   },
   "it": {
     "Play again": "Gioca ancora",
@@ -10367,7 +10375,8 @@
     "Replay": "Rigioca",
     "Info": "Info",
     "Game info": "Info sul gioco",
-    "By {author}": "Di {author}"
+    "By {author}": "Di {author}",
+    "Screen": "Schermo"
   },
   "tr": {
     "Play again": "Tekrar oyna",
@@ -11517,6 +11526,7 @@
     "Replay": "Yeniden oyna",
     "Info": "Bilgi",
     "Game info": "Oyun bilgisi",
-    "By {author}": "Yapan: {author}"
+    "By {author}": "Yapan: {author}",
+    "Screen": "Ekran"
   }
 }

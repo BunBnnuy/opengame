@@ -12344,3 +12344,55 @@
 .om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-actions {
   gap: 6px;
 }
+
+/* Template rail: the address row is hidden; viewport, Share and More live in the rail instead. */
+.om-sa-viewer-toolbar[data-feed-rail] {
+  display: none;
+}
+
+.om-sa-template-feed-tools {
+  display: contents;
+}
+
+/* Share keeps its own trigger markup (icon + label + live dot); lay it out like the other rail buttons. */
+.om-sa-template-feed-action.om-sa-template-feed-share {
+  position: relative;
+}
+
+.om-sa-template-feed-action.om-sa-template-feed-share > svg {
+  width: 32px;
+  height: 28px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.om-sa-template-feed-action.om-sa-template-feed-share:not(:disabled):hover > svg {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.om-sa-template-feed-action.om-sa-template-feed-share .om-web-publish-trigger-label {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--motion-muted);
+}
+
+.om-sa-template-feed-action.om-sa-template-feed-share .om-web-publish-dot {
+  position: absolute;
+  top: 2px;
+  right: 18px;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action.om-sa-template-feed-share .om-web-publish-trigger-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.om-sa-template-feed[data-placement="bottom"] .om-sa-template-feed-action.om-sa-template-feed-share > svg {
+  height: 36px;
+  padding: 9px 7px;
+}

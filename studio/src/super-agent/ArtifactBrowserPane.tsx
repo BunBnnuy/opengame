@@ -1,5 +1,6 @@
 import { Button } from 'open-design-ui/button';
 import { IconButton } from 'open-design-ui/icon-button';
+import { createPortal } from 'react-dom';
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { brandCatalogFile, type BrandCatalogEntry } from '../../../shared/brand-catalog';
 import { rankSearchResults } from '../../../shared/fuzzy-search';
@@ -2080,6 +2081,13 @@ export function ArtifactBrowserPane({
   );
   // Template feed: Remix moves from the toolbar into the rail beside the game; Share stays in the toolbar.
   const feedRailActive = Boolean(templateFeed && activeArtifact?.kind === 'game-project' && (isGameTrial || viewMode === 'preview'));
+  // While the template rail shows, the address row is hidden and its viewport, Share and More menus render in the rail
+  // (portaled, so their state and menus stay the same code as the toolbar's).
+  const [railToolsEl, setRailToolsEl] = useState<HTMLDivElement | null>(null);
+  const toolsInRail = Boolean(feedRailActive && railToolsEl);
+  const toRail = (node: ReactNode) => (toolsInRail && railToolsEl ? createPortal(node, railToolsEl) : node);
+  const railMenuSide = templateFeed?.placement === 'bottom' ? 'top' as const : 'left' as const;
+  const railMenuAlign = templateFeed?.placement === 'bottom' ? 'end' as const : 'center' as const;
   const toolbarRemix = feedRailActive ? undefined : toolbarGameAction;
   const toolbarCloudShare = canCloudShare;
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
@@ -2565,7 +2573,7 @@ export function ArtifactBrowserPane({
         </div>
       </div>
 
-      <div className="om-sa-viewer-toolbar">
+      <div className="om-sa-viewer-toolbar" data-feed-rail={feedRailActive || undefined}>
         <div className="om-sa-nav-btns">
           {(activeArtifact?.kind === 'web' || showNewTab) && (
             <>
@@ -2803,16 +2811,31 @@ export function ArtifactBrowserPane({
                     </Tooltip>
                     )}
 
-                    <Popover
+                    {toRail(<Popover
                       open={deviceMenuOpen}
                       onOpenChange={setDeviceMenuOpen}
-                      side="bottom"
-                      align="end"
+                      side={toolsInRail ? railMenuSide : 'bottom'}
+                      align={toolsInRail ? railMenuAlign : 'end'}
                       initialFocus={false}
                       aria-label={t('Viewport presets')}
-                      tooltip={t('Viewport presets')}
+                      tooltip={toolsInRail ? undefined : t('Viewport presets')}
                       className="om-sa-device-menu-popover"
-                      trigger={
+                      trigger={toolsInRail ? (
+                        <Button
+                          variant="plain"
+                          type="button"
+                          className="om-sa-template-feed-action"
+                          data-variant="plain"
+                          data-active={deviceMenuOpen || undefined}
+                          aria-label={t('Viewport presets')}
+                          aria-expanded={deviceMenuOpen}
+                        >
+                          <span className="om-sa-template-feed-action-icon" aria-hidden="true">
+                            <RemixIcon name={activeDeviceIcon} size={18} />
+                          </span>
+                          <span className="om-sa-template-feed-action-label">{t('Screen')}</span>
+                        </Button>
+                      ) : (
                         <Button
                           variant="plain"
                           type="button"
@@ -2825,7 +2848,7 @@ export function ArtifactBrowserPane({
                           <RemixIcon name={activeDeviceIcon} size={15} />
                           <RemixIcon name="arrow-down-s-line" size={13} className="om-sa-device-caret" />
                         </Button>
-                      }
+                      )}
                     >
                       <div className="om-sa-device-menu" role="menu" aria-label={t('Viewport presets')}>
                         {activeArtifact?.kind === 'web' ? (
@@ -2911,7 +2934,7 @@ export function ArtifactBrowserPane({
                           })
                         )}
                       </div>
-                    </Popover>
+                    </Popover>)}
 
                     {canCaptureScreenshot && !compactToolbar && (
                       <Tooltip label={t('Capture screenshot to chat')}>
@@ -3022,15 +3045,17 @@ export function ArtifactBrowserPane({
                   <span className="om-sa-toolbar-divider" aria-hidden="true" />
                 )}
 
-                {toolbarCloudShare && activeArtifact && (activeArtifact.kind === 'game-project' || activeArtifact.kind === 'design-project' || activeArtifact.kind === 'motion-project') && (
+                {toolbarCloudShare && activeArtifact && (activeArtifact.kind === 'game-project' || activeArtifact.kind === 'design-project' || activeArtifact.kind === 'motion-project') && toRail(
                   <WebPublishPopover
                     compact
+                    side={toolsInRail ? railMenuSide : undefined}
+                    align={toolsInRail ? railMenuAlign : undefined}
+                    triggerClassName={toolsInRail ? 'om-sa-template-feed-action om-sa-template-feed-share' : 'om-sa-share-trigger'}
                     targetKind={activeArtifact.kind === 'game-project' ? 'game' : activeArtifact.kind === 'motion-project' ? 'motion' : 'design'}
                     targetId={activeArtifact.kind === 'game-project' ? gamePublishId : activeArtifact.projectId!}
                     embedUrl={gameEmbedUrl}
                     filePath={activeArtifact.entry}
                     title={activeArtifact.title}
-                    triggerClassName="om-sa-share-trigger"
                     autoOpen={pendingDeployArtifactId === activeArtifact.id}
                     onAutoOpenConsumed={onConsumeDeployRequest}
                     revisionKey={activeArtifact.revision ?? String(activeArtifact.updatedAt)}
@@ -3063,17 +3088,32 @@ export function ArtifactBrowserPane({
             );
           })()}
 
-          {activeArtifact && (
+          {activeArtifact && toRail(
             <Popover
               open={browserMenuOpen}
               onOpenChange={setBrowserMenuOpen}
-              side="bottom"
-              align="end"
+              side={toolsInRail ? railMenuSide : 'bottom'}
+              align={toolsInRail ? railMenuAlign : 'end'}
               initialFocus={false}
               aria-label={t('Browser options')}
               renderPanel={<MenuPanel data-menu-layout="custom" />}
               className="motion-positioned-menu om-sa-browser-menu-popover"
-              trigger={
+              trigger={toolsInRail ? (
+                <Button
+                  variant="plain"
+                  type="button"
+                  className="om-sa-template-feed-action"
+                  data-variant="plain"
+                  data-active={browserMenuOpen || undefined}
+                  aria-label={t('Browser options')}
+                  aria-expanded={browserMenuOpen}
+                >
+                  <span className="om-sa-template-feed-action-icon" aria-hidden="true">
+                    <RemixIcon name="more-line" size={18} />
+                  </span>
+                  <span className="om-sa-template-feed-action-label">{t('More')}</span>
+                </Button>
+              ) : (
                 <IconButton
                   variant="ghost"
                   className="motion-icon-button"
@@ -3081,7 +3121,7 @@ export function ArtifactBrowserPane({
                   aria-label={t('Browser options')}
                   icon={<RemixIcon name="more-line" size={15} />}
                 />
-              }
+              )}
             >
               <div className="om-sa-browser-menu" role="menu" aria-label={t('Browser options')}>
                 {activeArtifact.kind === 'web' && (
@@ -3756,6 +3796,8 @@ export function ArtifactBrowserPane({
                   pressed={expanded}
                   onClick={onToggleExpand}
                 />
+                {/* Viewport, Share and More are portaled in here from the hidden address row. */}
+                <div className="om-sa-template-feed-tools" ref={setRailToolsEl} />
               </>
             ) : null;
             return (
