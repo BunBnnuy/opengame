@@ -3597,9 +3597,12 @@ export function ArtifactBrowserPane({
               />
             );
             // The workspace only passes templateFeed while the active tab is a template from the showcase list.
-            return templateFeed && (isGameTrial || viewMode === 'preview')
-              ? <TemplateFeedStage feed={templateFeed}>{gameView}</TemplateFeedStage>
-              : gameView;
+            // Always keep the wrapper so the game is not remounted when the controls come and go.
+            return (
+              <TemplateFeedStage feed={templateFeed && (isGameTrial || viewMode === 'preview') ? templateFeed : null}>
+                {gameView}
+              </TemplateFeedStage>
+            );
           })()
         ) : activeArtifact.kind === 'web' && activeArtifact.url && chatId ? (
           <div className="om-sa-web-stage">

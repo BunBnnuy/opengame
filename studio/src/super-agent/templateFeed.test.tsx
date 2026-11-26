@@ -69,7 +69,7 @@ describe('TemplateFeedStage', () => {
     host = null;
   });
 
-  function render(position: { index: number; total: number; prevId: string | null; nextId: string | null }) {
+  function render(position: { index: number; total: number; prevId: string | null; nextId: string | null } | null) {
     const onStep = vi.fn();
     host = document.createElement('div');
     document.body.append(host);
@@ -77,7 +77,7 @@ describe('TemplateFeedStage', () => {
     act(() => {
       root!.render(
         <I18nProvider>
-          <TemplateFeedStage feed={{ position, placement: 'side', onStep }}>
+          <TemplateFeedStage feed={position ? { position, placement: 'side', onStep } : null}>
             <iframe title="game" />
           </TemplateFeedStage>
         </I18nProvider>,
@@ -110,5 +110,14 @@ describe('TemplateFeedStage', () => {
     const frame = stage.querySelector('iframe')!;
     act(() => { frame.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
     expect(onStep).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the game mounted with no rail and ignores wheel and keys when the template leaves the list', () => {
+    const { onStep, stage } = render(null);
+    expect(stage.querySelector('iframe')).not.toBeNull();
+    expect(stage.querySelector('.om-sa-template-feed-rail')).toBeNull();
+    act(() => { stage.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true })); });
+    act(() => { stage.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(onStep).not.toHaveBeenCalled();
   });
 });

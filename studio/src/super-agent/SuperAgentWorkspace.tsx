@@ -1737,17 +1737,22 @@ export function SuperAgentWorkspace({
     if (!active || !onActiveTemplateGameChange) return;
     const shown = playingGameId && templateFeedIds.includes(playingGameId) ? playingGameId : null;
     if (shown) {
-      if (syncedTemplateGameRef.current === shown) return;
       syncedTemplateGameRef.current = shown;
-      if (requestedGameId === shown) return;
+      // Already in the route, or a write for it is still on its way.
+      if (requestedGameId === shown || pendingRouteGameRef.current === shown) return;
       pendingRouteGameRef.current = shown;
       onActiveTemplateGameChange(shown);
-    } else if (syncedTemplateGameRef.current && requestedGameId === syncedTemplateGameRef.current) {
-      // The template preview closed or moved off the list: drop it from the route.
-      syncedTemplateGameRef.current = null;
+      return;
+    }
+    // Still the same template, just filtered out of the list: keep it in the route.
+    if (playingGameId && playingGameId === syncedTemplateGameRef.current) return;
+    // Not on a template any more (closed or another game). Drop the template from the route only
+    // if the route still points at it; another game the route opened stays as it is.
+    if (syncedTemplateGameRef.current && requestedGameId === syncedTemplateGameRef.current) {
       pendingRouteGameRef.current = null;
       onActiveTemplateGameChange(null);
     }
+    syncedTemplateGameRef.current = null;
   }, [active, onActiveTemplateGameChange, playingGameId, requestedGameId, templateFeedIds]);
 
   const handleCloseTab = (tabId: string) => {
