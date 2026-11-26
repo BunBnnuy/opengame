@@ -54,6 +54,7 @@ import { isMultiplayerGameArtifact } from '../motion/game/gameSuperAgent';
 import { diagnosticsActive, recordBrowserDiagnostic } from '../motion/diagnostics';
 import { lazyWithChunkReload, preloadableLazyWithChunkReload } from '../utils/chunkReload';
 import { releaseMediaElement } from '../utils/releaseMediaElement';
+import { useDeferredIframeSource } from '../utils/useDeferredIframeSource';
 import {
   BrowserAnnotationOverlay,
   type AnnotationContentBounds,
@@ -411,7 +412,10 @@ function ProjectPreviewCodeView({
   onBackgroundLoadingChangeRef.current = onBackgroundLoadingChange;
 
   const hasFrameSource = mode === 'preview' && Boolean(previewUrl || srcDoc);
-  const frameLoaded = hasFrameSource && loadedFrameIdentity === frameIdentity;
+  const localIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const effectiveIframeRef = iframeRef ?? localIframeRef;
+  const sourceReady = useDeferredIframeSource(effectiveIframeRef, frameKey, hasFrameSource);
+  const frameLoaded = hasFrameSource && sourceReady && loadedFrameIdentity === frameIdentity;
   const frameRevealTimedOut = hasFrameSource && revealedFrameIdentity === frameIdentity;
 
   useEffect(() => {
@@ -422,13 +426,13 @@ function ProjectPreviewCodeView({
   }, [mode]);
 
   useEffect(() => {
-    if (!hasFrameSource || frameLoaded || frameRevealTimedOut || !revealTimeoutMs || revealTimeoutMs <= 0) return;
+    if (!hasFrameSource || !sourceReady || frameLoaded || frameRevealTimedOut || !revealTimeoutMs || revealTimeoutMs <= 0) return;
     const timer = window.setTimeout(() => {
       setRevealedFrameIdentity(frameIdentity);
       onRevealTimeoutRef.current?.();
     }, revealTimeoutMs);
     return () => window.clearTimeout(timer);
-  }, [hasFrameSource, frameLoaded, frameRevealTimedOut, revealTimeoutMs, frameIdentity]);
+  }, [hasFrameSource, sourceReady, frameLoaded, frameRevealTimedOut, revealTimeoutMs, frameIdentity]);
 
   const backgroundLoading = hasFrameSource && !frameLoaded && frameRevealTimedOut;
 
@@ -637,13 +641,14 @@ function ProjectPreviewCodeView({
           </div>
         )}
         <iframe
-          ref={iframeRef}
+          ref={effectiveIframeRef}
           key={frameKey}
           title={title}
-          {...(srcDoc ? { srcDoc } : { src: previewUrl })}
+          {...(sourceReady ? (srcDoc ? { srcDoc } : { src: previewUrl }) : {})}
           sandbox={sandbox}
           {...(allow ? { allow } : {})}
           onLoad={() => {
+            if (!sourceReady) return;
             setLoadedFrameIdentity(frameIdentity);
             onIframeLoad?.();
           }}
@@ -1113,7 +1118,7 @@ function GameProjectArtifactView({
     if (bundledBlobUrl) return bundledBlobUrl;
     if (projectId) {
       const presentedParam = artifact.presentedAt ? `&p=${artifact.presentedAt}` : '';
-      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}`;
+      return `/motion-api/games/${encodeURIComponent(projectId)}/play/index.html?rev=${encodeURIComponent(artifact.revision || String(reloadKey))}${presentedParam}&r=${reloadKey}&omViewportGuard=1`;
     }
     return artifact.url || '';
   }, [bundledBlobUrl, projectId, artifact.url, artifact.revision, artifact.presentedAt, reloadKey]);
