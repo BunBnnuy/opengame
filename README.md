@@ -48,6 +48,7 @@ Paste this instruction into **DeepSeek TUI / Harness**, **Claude Code**, **Codex
 
 ```text
 Follow https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md to connect OpenGame to this agent. For a new install, use a shallow clone (--depth 1) and skip LFS downloads. Open the Game Studio template gallery so I can choose a game. Fetch that game's assets when I play or remix it.
+If you find a reproducible OpenGame bug, you're welcome to open a PR against nexu-io/opengame with the fix, steps to reproduce, and how you verified it.
 ```
 
 ### 2. Install the Game Skill with Skills CLI

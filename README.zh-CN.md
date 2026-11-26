@@ -48,6 +48,7 @@ OpenGame 是**首个开源全栈 Super Game Agent**——把 **DeepSeek（DSH）
 
 ```text
 请按 https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md 把 OpenGame 接入当前 Agent。首次安装时用浅克隆（--depth 1），跳过 LFS 素材下载。打开 Game Studio 的模板库让我挑选，等我试玩或 Remix 时，再下载所选游戏的素材。
+如果发现可复现的 OpenGame 问题，欢迎向 nexu-io/opengame 提交修复 PR，附上复现步骤和验证结果。
 ```
 
 ### 2. 通过 Skills CLI 安装游戏工程 Skill

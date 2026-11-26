@@ -101,4 +101,6 @@ Configure only the providers you intend to use. Available models are discovered 
 | Play works but automated capture fails | Check Chrome/Chromium availability and loopback access; ordinary play and server-side capture have different requirements. |
 | A shared link still shows the previous version | Publish a new static snapshot through the sharing flow. |
 
+If you or your agent reproduce a bug in setup, template downloads or Studio, we welcome a fix via pull request against `main` in [nexu-io/opengame](https://github.com/nexu-io/opengame). Include the steps to reproduce and how you verified the fix. See the [contribution guide](../CONTRIBUTING.md).
+
 [Back to OpenGame](../README.md)

@@ -48,6 +48,7 @@ OpenGame は**世界初のオープンソース・フルスタック Super Game 
 
 ```text
 https://github.com/nexu-io/opengame/blob/main/docs/opengame-setup.md に従って、この Agent に OpenGame を接続してください。初回は浅いクローン（--depth 1）を使い、LFS 素材のダウンロードをスキップしてください。Game Studio のテンプレート一覧を開き、私がゲームを選んでプレイまたはリミックスするときに、そのゲームの素材を取得してください。
+OpenGame で再現できる不具合を見つけたら、再現手順と修正後の確認結果を添えて nexu-io/opengame に修正 PR を送ってください。
 ```
 
 ### 2. Skills CLI でゲーム開発 Skill をインストール
