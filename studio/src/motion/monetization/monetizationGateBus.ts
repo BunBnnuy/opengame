@@ -11,6 +11,9 @@ export interface MonetizationGateRequest {
   kind: MonetizationGateKind;
   pageName?: NonNullable<Fields<'surface_view'>['page_name']>;
   studioId?: string;
+  modality?: 'image' | 'video' | 'audio' | 'all';
+  /** Optional entry_id to correlate an initiating touchpoint click with this modal impression and checkout link. */
+  entryId?: string;
   /** Optional contextual detail from a failed generation or publish call (never raw stack traces). */
   reason?: 'insufficient_balance' | 'quota_exceeded' | 'billing_past_due' | 'concurrency_limit' | 'high_resolution';
   activeCount?: number;
@@ -79,6 +82,7 @@ export function detectMonetizationGateFromError(error: { status?: number; code?:
 
   if (
     status === 402
+    || code === 'balance_low'
     || code === 'insufficient_balance'
     || code === 'insufficient_credits'
     || code === 'credits_exhausted'
@@ -96,7 +100,7 @@ export function detectMonetizationGateFromError(error: { status?: number; code?:
       : code === 'quota_exceeded' || message.includes('quota')
         ? 'quota_exceeded'
         : 'insufficient_balance';
-    return { kind: 'balance', reason, pageName: 'creative_studio', studioId: 'game' };
+    return { kind: 'balance', reason, pageName: 'creative_studio' };
   }
 
   if (
@@ -106,7 +110,7 @@ export function detectMonetizationGateFromError(error: { status?: number; code?:
     || message.includes('concurrency limit')
     || message.includes('concurrent tasks limit')
   ) {
-    return { kind: 'concurrency', reason: 'concurrency_limit', pageName: 'creative_studio', studioId: 'game' };
+    return { kind: 'concurrency', reason: 'concurrency_limit', pageName: 'creative_studio' };
   }
 
   return null;

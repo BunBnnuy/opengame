@@ -12,7 +12,7 @@ import { StudioToastViewport } from '../components/StudioToastViewport';
 import { isStudioSaveErrorAlreadyToasted } from '../utils/studioSaveDiagnostics';
 import { TimelineMediaActionError, timelineMediaActionOutcome } from '../utils/timelineMediaActionError';
 import { detectMonetizationGateFromError, openMonetizationGate } from './monetization/monetizationGateBus';
-import { reportEntitlementGateClick } from './pageTracking';
+import { newTrackingId, reportEntitlementGateClick } from './pageTracking';
 import { requestedProject } from './workspaceRouting';
 
 export function generationParameters(model: Model, ratio: string, duration: number, extra: Record<string, unknown>) {
@@ -126,7 +126,7 @@ export function MediaGenerator({ request, onClose, onSettings }: { request: Medi
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
       const gate = detectMonetizationGateFromError(e instanceof Error ? { message: e.message } : { message: msg });
-      if (gate) openMonetizationGate({ ...gate, pageName: 'studio' });
+      if (gate) openMonetizationGate({ ...gate, pageName: 'studio', studioId: 'motion', modality: mediaKind });
     }
     finally { setBusy(false); }
   }
@@ -201,7 +201,8 @@ export function MediaGenerator({ request, onClose, onSettings }: { request: Medi
     {visibleJobs.length > 0 && <div className="motion-generation-results" aria-live="polite">{visibleJobs.slice(0, 8).map(job => <article key={job.id}>
       <div className="motion-media-row"><span title={job.prompt}>{job.model.label} <small>{t(job.state)}</small></span>{['queued', 'running'].includes(job.state) && <Button variant="plain" disabled={cancelling.includes(job.id)} aria-busy={cancelling.includes(job.id)} onClick={() => void cancel(job)}>{t('Cancel')}</Button>}</div>
       {job.error && (() => {
-        const failedGate = detectMonetizationGateFromError({ message: job.error });
+        const failedGate = detectMonetizationGateFromError({ code: job.errorCode, message: job.error });
+        const jobModality: Modality = job.modality === 'image' || job.modality === 'video' || job.modality === 'audio' ? job.modality : mediaKind;
         return <>
           <p className="motion-media-error">{t(job.error)}</p>
           {failedGate && (
@@ -209,8 +210,13 @@ export function MediaGenerator({ request, onClose, onSettings }: { request: Medi
               variant="plain"
               className="motion-media-connect"
               onClick={() => {
-                reportEntitlementGateClick('studio', 'open_pricing', 'failure_card_topup');
-                openMonetizationGate({ ...failedGate, pageName: 'studio' });
+                const entryId = newTrackingId();
+                reportEntitlementGateClick('studio', 'open_pricing', 'failure_card_topup', {
+                  entry_id: entryId,
+                  studio_id: 'motion',
+                  modality: jobModality,
+                });
+                openMonetizationGate({ ...failedGate, pageName: 'studio', studioId: 'motion', modality: jobModality, entryId });
               }}
             >
               {t('Top up or upgrade')}

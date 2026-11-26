@@ -301,11 +301,13 @@ export class ModelGateway {
   private saveJob(job: GenerationJob) { return atomic(path.join(this.root, 'jobs', job.id + '.json'), job); }
   private async saveResult(job: GenerationJob, cause?: unknown) {
     if (job.state === 'queued' || job.state === 'running') throw new Error('Expected a terminal generation job');
+    const error_code = job.state === 'completed' ? undefined : mediaGenerationError(cause ?? job.error, job.phase);
+    if (job.state === 'failed' && error_code) job.errorCode = error_code;
+    else delete job.errorCode;
     await this.saveJob(job);
     const duration_ms = Math.min(86_400_000, Math.max(0, Math.round(job.updatedAt - (job.startedAt ?? job.createdAt))));
     const queue_wait_ms = job.startedAt !== undefined
       ? Math.min(86_400_000, Math.max(0, Math.round(job.startedAt - job.createdAt))) : undefined;
-    const error_code = job.state === 'completed' ? undefined : mediaGenerationError(cause ?? job.error, job.phase);
     this.options.tracking?.track('media_generation_result', {
       modality: job.modality, job_id: job.id, job_state: job.state,
       asset_count: Math.max(job.assets.length, job.libraryAssets?.length ?? 0),
@@ -433,7 +435,7 @@ export class ModelGateway {
       } else if (job.providerOrigin !== await this.cloudOrigin()) throw new Error('Provider API origin changed; the original task was not resumed');
       if (job.model.provider === 'opendesign' && !(await this.credential('opendesign')).key || !(await this.status()).providers.find(provider => provider.id === job.model.provider)?.available) throw new Error('Provider is no longer available');
       if ((await this.listJobs()).filter(item => ['queued', 'running'].includes(item.state)).length >= 20) throw new Error('Generation queue is full (20 jobs)');
-      job.state = 'queued'; job.phase = 'resuming'; job.attemptKind = 'resume'; job.updatedAt = Date.now(); delete job.error;
+      job.state = 'queued'; job.phase = 'resuming'; job.attemptKind = 'resume'; job.updatedAt = Date.now(); delete job.error; delete job.errorCode;
       await this.saveJob(job); return job;
     });
   }
@@ -505,7 +507,7 @@ export class ModelGateway {
     return this.store.lock(async () => {
       const job = await this.getJob(id);
       if (['completed', 'queued', 'running'].includes(job.state)) return job;
-      job.savePending = true; job.state = 'queued'; job.phase = 'saving'; job.attemptKind = 'retry_save'; job.updatedAt = Date.now(); delete job.error;
+      job.savePending = true; job.state = 'queued'; job.phase = 'saving'; job.attemptKind = 'retry_save'; job.updatedAt = Date.now(); delete job.error; delete job.errorCode;
       await this.saveJob(job); return job;
     });
   }

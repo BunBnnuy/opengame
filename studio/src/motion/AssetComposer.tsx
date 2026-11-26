@@ -52,8 +52,13 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
   const { locale, t } = useI18n(), { openModelSettings, openProviderSettings, openAccountSettings, openSubscriptionSettings } = useWorkspaceChrome();
   const campaign = useBlackFridayActive();
   const [freeGateEntryId, setFreeGateEntryId] = useState(newCampaignEntryId);
-  const trackingPageForHook = studio ? 'creative_studio' as const : 'assets' as const;
-  const markFreeGateCheckoutReturn = useCheckoutReturnRefresh(trackingPageForHook, 'studio_free_gate');
+  const trackingPage = studio ? 'creative_studio' as const : 'assets' as const;
+  const studioId = studio?.destination.studio.id;
+  const effectiveStudioId = studioId ?? 'assets';
+  const markFreeGateCheckoutReturn = useCheckoutReturnRefresh(trackingPage, 'studio_free_gate', {
+    studioId: effectiveStudioId,
+    modality: draft.modality,
+  });
   const scene = studio?.destination.scene;
   const imageWorkspace = studio?.destination.studio.id === 'design' && scene?.modality === 'image';
   const offerWorkspace = imageWorkspace || studio?.destination.studio.id === 'cinema';
@@ -288,7 +293,7 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
     } catch (error) {
       tracking.reportAssetGenerationSubmit(draft.modality, 'failure', draft.references.length, Boolean(draft.target), studioContext);
       const gate = detectMonetizationGateFromError(error as { status?: number; code?: string; message?: string });
-      if (gate) openMonetizationGate({ ...gate, pageName: trackingPage, ...(studioId ? { studioId } : {}) });
+      if (gate) openMonetizationGate({ ...gate, pageName: trackingPage, studioId: effectiveStudioId, modality: draft.modality });
       if (mounted.current) onError((error as Error).message);
     } finally { if (mounted.current) setBusy(false); }
   };
@@ -323,29 +328,27 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
     </div>}
   </div>;
 
-  const trackingPage = studio ? 'creative_studio' as const : 'assets' as const;
-  const studioId = studio?.destination.studio.id;
   const signInGateVisible = Boolean(openDesignMissing || (unconfiguredPreferred && preferred?.provider === 'account'));
   const prevSignInGate = useRef(false);
   useEffect(() => {
     if (signInGateVisible && !prevSignInGate.current) {
-      tracking.reportEntitlementGateView(trackingPage, 'studio_generate', studioId ? { studio_id: studioId } : {});
+      tracking.reportEntitlementGateView(trackingPage, 'studio_generate', { studio_id: effectiveStudioId, modality: draft.modality });
     }
     prevSignInGate.current = signInGateVisible;
-  }, [signInGateVisible, trackingPage, studioId]);
+  }, [signInGateVisible, trackingPage, effectiveStudioId, draft.modality]);
   const prevFreeGate = useRef(false);
   useEffect(() => {
     if (accountNotIncluded && !prevFreeGate.current) {
-      tracking.reportEntitlementGateView(trackingPage, 'studio_free_gate', studioId ? { studio_id: studioId } : {});
+      tracking.reportEntitlementGateView(trackingPage, 'studio_free_gate', { studio_id: effectiveStudioId, modality: draft.modality });
     }
     prevFreeGate.current = Boolean(accountNotIncluded);
-  }, [accountNotIncluded, trackingPage, studioId]);
+  }, [accountNotIncluded, trackingPage, effectiveStudioId, draft.modality]);
 
   const configureProvider = (providerId: string) => {
     if (providerId === 'account') {
       const entryId = tracking.newTrackingId();
-      setPendingAttribution('sign_in', 'studio_generate', entryId);
-      send('ui_click', { page_name: trackingPage, area: 'asset_create', element: 'sign_in', hook_id: 'studio_generate', entry_id: entryId, ...(studioId ? { studio_id: studioId } : {}) });
+      setPendingAttribution('sign_in', 'studio_generate', entryId, { studioId: effectiveStudioId, modality: draft.modality });
+      send('ui_click', { page_name: trackingPage, area: 'asset_create', element: 'sign_in', hook_id: 'studio_generate', entry_id: entryId, studio_id: effectiveStudioId, modality: draft.modality });
       (openAccountSettings ?? openModelSettings)();
       return;
     }
@@ -396,7 +399,7 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
           <a
             className="om-button"
             data-primary
-            href={campaignPricingUrl(locale, 'opengame_studio_free_gate', freeGateEntryId)}
+            href={campaignPricingUrl(locale, 'opengame_studio_free_gate', freeGateEntryId, { studioId: effectiveStudioId, modality: draft.modality })}
             {...pricingLinkTargetProps()}
             onClick={() => {
               const clickedId = freeGateEntryId;
@@ -408,7 +411,8 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
                 hook_id: 'studio_free_gate',
                 entry_id: clickedId,
                 ...(campaign ? { campaign_id: BLACK_FRIDAY_CAMPAIGN } : {}),
-                ...(studioId ? { studio_id: studioId } : {}),
+                studio_id: effectiveStudioId,
+                modality: draft.modality,
               });
               window.setTimeout(() => setFreeGateEntryId(newCampaignEntryId()), 0);
             }}
@@ -419,8 +423,8 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
           </a>
           <Button variant="ghost" className="om-button h-auto" onClick={() => {
             const entryId = tracking.newTrackingId();
-            setPendingAttribution('subscription', 'studio_free_gate', entryId);
-            send('ui_click', { page_name: trackingPage, area: 'asset_create', element: 'manage_subscription', hook_id: 'studio_free_gate', entry_id: entryId, ...(studioId ? { studio_id: studioId } : {}) });
+            setPendingAttribution('subscription', 'studio_free_gate', entryId, { studioId: effectiveStudioId, modality: draft.modality });
+            send('ui_click', { page_name: trackingPage, area: 'asset_create', element: 'manage_subscription', hook_id: 'studio_free_gate', entry_id: entryId, studio_id: effectiveStudioId, modality: draft.modality });
             (openSubscriptionSettings ?? openAccountSettings ?? openModelSettings)();
           }}>
             {t('Manage subscription')}
@@ -442,7 +446,7 @@ export function AssetComposer({ active, studio, draft, setDraft, agentReferences
     hasInputImage={draft.references.length > 0} hidden={Object.keys(featureRule?.parameters ?? {})}
     isLockedResolution={isLockedHighRes}
     onLockedResolutionClick={(_val, labelText) => {
-      openResolutionGate({ resolutionLabel: labelText, pageName: trackingPage, ...(studioId ? { studioId } : {}) });
+      openResolutionGate({ resolutionLabel: labelText, pageName: trackingPage, studioId: effectiveStudioId, modality: draft.modality });
     }}
     onChange={value => {
       setParameterDrafts(current => ({ ...current, [parameterKey]: value }));

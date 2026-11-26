@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { WorkspaceStore } from '../workspace.ts';
 import { AssetLibrary } from './asset-library.ts';
 import { preflightAssetCapabilityGenerate } from './capability-center.ts';
+import { balanceLowTopupForJob, type McpChannel } from './media-use.ts';
 import { gatewayFor } from './service.ts';
 import { requireNativeRuntime } from '../scripts/npm-runtime.mjs';
 import { pluginRoot } from '../hyperframes.ts';
@@ -17,6 +18,8 @@ export async function assetOperation(
   tracking?: OmTracking,
   channel: 'gui' | 'mcp' = 'mcp',
   host?: HostContext,
+  mcpChannel: McpChannel = 'mcp_stdio',
+  emitUpgradeLinkResult = true,
 ) {
   const library = new AssetLibrary(store), gateway = gatewayFor(store, tracking);
   if (args.action === 'list') return library.list(args);
@@ -60,7 +63,18 @@ export async function assetOperation(
     if (!job.library && !job.saveToLibrary) throw new Error('ASSET_JOB_NOT_FOUND');
     if (['retry_save', 'resume'].includes(args.action) && !args.requestId) throw new Error('A stable requestId is required');
     if (args.action === 'resume') return { job: await gateway.resume(job.id, args.requestId) };
-    return { job: args.action === 'retry_save' ? await gateway.retrySave(job.id) : args.action === 'cancel' ? await gateway.cancel(job.id) : job };
+    if (args.action === 'retry_save') return { job: await gateway.retrySave(job.id) };
+    if (args.action === 'cancel') return { job: await gateway.cancel(job.id) };
+    const topupFields = await balanceLowTopupForJob(gateway, job, {
+      channel,
+      mcpChannel,
+      studioId: 'assets',
+      directory: (store.workspaceStore ?? store).directory,
+      tracking,
+      host,
+      emitUpgradeLinkResult,
+    });
+    return { job, ...topupFields };
   }
   if (args.action === 'import_to_project') {
     if (!importProject || !args.projectId || !args.requestId) throw new Error('Explicit projectId and requestId are required');
