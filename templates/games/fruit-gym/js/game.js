@@ -2282,6 +2282,9 @@
     }
     document.body.classList.remove('modal-open');
     openModalId = null;
+    if (targetId !== 'modalSummary' && !running && dom.startOverlay && dom.startOverlay.classList.contains('hidden')) {
+      refreshStartCard();
+    }
   }
 
   function bindModalGuard(backdropEl) {
@@ -2579,11 +2582,7 @@
     var closes = document.querySelectorAll('[data-close]');
     for (var i = 0; i < closes.length; i++) {
       closes[i].addEventListener('click', function () {
-        var cid = this.getAttribute('data-close');
-        closeModal(cid);
-        if (!running && dom.startOverlay.classList.contains('hidden')) {
-          refreshStartCard();
-        }
+        closeModal(this.getAttribute('data-close'));
       });
     }
     bindModalGuard(dom.modalSummary);

@@ -388,7 +388,12 @@
     }, { passive: false });
   }
 
+  function isRunPaused() {
+    return game.pausedByBoss || Boolean(activeModalId);
+  }
+
   function openModal(id) {
+    game.pointerDown = false;
     if (activeModalId && activeModalId !== id) {
       $(activeModalId).classList.add('hidden');
     } else if (!activeModalId) {
@@ -722,6 +727,17 @@
     return Math.max(minX, Math.min(maxX, rawX));
   }
 
+  function syncDailySeedDate() {
+    var todayKey = Data.getLocalDateKey();
+    if (saveProfile.dailyDateKey !== todayKey) {
+      saveProfile.dailyDateKey = todayKey;
+      saveProfile.bestByMode.same_desk = 0;
+      saveProfile.runsByMode.same_desk = [];
+      persistProfile();
+    }
+    return todayKey;
+  }
+
   function startNewGame(modeId) {
     if (modeId) game.mode = modeId;
     if (game.timerInterval) {
@@ -735,8 +751,7 @@
     }
 
     if (game.mode === 'same_desk') {
-      var seedStr = Data.getLocalDateKey();
-      saveProfile.dailyDateKey = seedStr;
+      var seedStr = syncDailySeedDate();
       game.rng = Data.createSeededRandom(parseInt(seedStr, 10) * 19 + 42);
     } else {
       game.rng = Math.random;
@@ -776,7 +791,7 @@
     if (game.mode === 'lunch60') {
       game.timeLeft = modeObj.timeLimit;
       game.timerInterval = setInterval(function () {
-        if (game.over || game.pausedByBoss) return;
+        if (game.over || isRunPaused()) return;
         game.timeLeft -= 1;
         updateHud();
         if (game.timeLeft <= 0) {
@@ -794,7 +809,7 @@
   }
 
   function dropCurrentStage() {
-    if (game.over || game.pausedByBoss || !game.canDrop) return;
+    if (game.over || isRunPaused() || !game.canDrop) return;
     var now = performance.now();
     if (now < game.dropCooldownUntil) return;
 
@@ -894,7 +909,7 @@
   }
 
   function triggerDeskShake() {
-    if (game.over || game.pausedByBoss) return;
+    if (game.over || isRunPaused()) return;
     var t = L();
     if (game.shakesLeft <= 0) {
       showToast(t.toastShakeEmpty);
@@ -926,7 +941,7 @@
   }
 
   function triggerReadAllClear() {
-    if (game.over || game.pausedByBoss) return;
+    if (game.over || isRunPaused()) return;
     var t = L();
     if (game.clearsLeft <= 0) {
       showToast(t.toastClearEmpty);
@@ -1172,7 +1187,7 @@
     var dt = Math.min(0.032, (ts - game.lastFrameMs) / 1000);
     game.lastFrameMs = ts;
 
-    if (!game.over && !game.pausedByBoss) {
+    if (!game.over && !isRunPaused()) {
       stepPhysics(dt);
       game.tick += 1;
     }
@@ -1278,6 +1293,7 @@
   /* ---- Local Records Leaderboard Modal ---- */
   function renderRankModal(modeId) {
     if (modeId) game.rankMode = modeId;
+    if (game.rankMode === 'same_desk') syncDailySeedDate();
     var t = L();
     var lang = saveProfile.lang;
     var modeObj = getModeObj(game.rankMode);
@@ -1408,13 +1424,13 @@
     var canvas = $('gameCanvas');
 
     function onStart(clientX) {
-      if (game.over || game.pausedByBoss || activeModalId) return;
+      if (game.over || isRunPaused()) return;
       game.pointerDown = true;
       game.aimX = clampAimX(getCanvasLogicalX(clientX), game.currentLevel);
     }
 
     function onMove(clientX) {
-      if (!game.pointerDown || game.over || game.pausedByBoss) return;
+      if (!game.pointerDown || game.over || isRunPaused()) return;
       game.aimX = clampAimX(getCanvasLogicalX(clientX), game.currentLevel);
     }
 
@@ -1459,7 +1475,7 @@
         else if (activeModalId) closeModal(activeModalId);
         return;
       }
-      if (game.over || game.pausedByBoss || activeModalId) return;
+      if (game.over || isRunPaused()) return;
       if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
         game.aimX = clampAimX(game.aimX - 24, game.currentLevel);
       } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
@@ -1547,7 +1563,7 @@
     getState: function () {
       return {
         phase: game.over ? 'over' : 'playing',
-        running: !game.over && !game.pausedByBoss,
+        running: !game.over && !isRunPaused(),
         tick: game.tick,
         mode: game.mode,
         lang: saveProfile.lang,
