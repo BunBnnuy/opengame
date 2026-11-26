@@ -2343,7 +2343,7 @@ test('Codex and Claude Super Agent prompts share unified gameAssetInstructions w
   }
 });
 
-test('SuperAgentConversations steers active turns while preserving threadId and drains queued items afterwards', () => fixture(async store => {
+test('SuperAgentConversations steers active turns while preserving threadId and drains queued items afterwards', context => fixture(async store => {
   const abortedPrompts: string[] = [];
   const seenThreads: (string | undefined)[] = [];
   let releaseFirst!: () => void;
@@ -2377,6 +2377,7 @@ test('SuperAgentConversations steers active turns while preserving threadId and 
   });
 
   const runtime = { origin: 'http://127.0.0.1:4120', phase1: () => ({} as Phase1Service) };
+  context.after(() => service.close());
   const chat = await service.create({ engine: 'claude' });
   await service.start(chat.id, { requestId: 'req-steer-1', text: 'Initial prompt' }, runtime);
   await firstStarted;
@@ -2389,20 +2390,18 @@ test('SuperAgentConversations steers active turns while preserving threadId and 
   assert.deepEqual(abortedPrompts, ['Initial prompt']);
 
   // Wait for steered turn and auto-dequeued follow-up to both finish.
-  let finalChat = await service.get(chat.id);
-  for (let i = 0; i < 40 && (finalChat.state === 'running' || (finalChat.queuedMessages?.length ?? 0) > 0); i++) {
-    await new Promise(r => setTimeout(r, 15));
-    finalChat = await service.get(chat.id);
-  }
-  assert.equal(finalChat.state, 'idle');
-  assert.equal(finalChat.queuedMessages, undefined);
-  assert.deepEqual(seenThreads, [undefined, 'claude-thread-steer', 'claude-thread-steer']);
+  const finalChat = await context.waitFor(async () => {
+    const chatState = await service.get(chat.id);
+    assert.equal(chatState.state, 'idle');
+    assert.equal(chatState.queuedMessages, undefined);
+    assert.deepEqual(seenThreads, [undefined, 'claude-thread-steer', 'claude-thread-steer']);
+    return chatState;
+  }, { timeout: 10_000 });
   assert.ok(finalChat.messages.some(m => m.role === 'user' && m.text === 'Steer prompt'));
   assert.ok(finalChat.messages.some(m => m.role === 'user' && m.text === 'Queued after steer'));
-  await service.close();
 }));
 
-test('SuperAgentConversations supports queue CRUD, sendQueuedMessageNow, auto-dequeue, and preserves queue on stop or error', () => fixture(async store => {
+test('SuperAgentConversations supports queue CRUD, sendQueuedMessageNow, auto-dequeue, and preserves queue on stop or error', context => fixture(async store => {
   const executed: { text: string; attachmentIds: string[]; tagLabels: string[] }[] = [];
   let releaseHold: (() => void) | null = null;
   const nextHold = () => new Promise<void>(resolve => { releaseHold = resolve; });
@@ -2432,6 +2431,7 @@ test('SuperAgentConversations supports queue CRUD, sendQueuedMessageNow, auto-de
   });
 
   const runtime = { origin: 'http://127.0.0.1:4120', phase1: () => ({} as Phase1Service) };
+  context.after(() => service.close());
   const chat = await service.create({ engine: 'claude' });
   const slowStarted = nextHold();
   await service.start(chat.id, { requestId: 'req-q-init', text: 'Slow run' }, runtime);
@@ -2465,14 +2465,13 @@ test('SuperAgentConversations supports queue CRUD, sendQueuedMessageNow, auto-de
 
   // Send Q3 immediately -> interrupts Slow run, removes Q3, runs Q3, then auto-dequeues Edited queued 1.
   await service.sendQueuedMessageNow(chat.id, q3Id, runtime);
-  let settled = await service.get(chat.id);
-  for (let i = 0; i < 40 && (settled.state === 'running' || (settled.queuedMessages?.length ?? 0) > 0); i++) {
-    await new Promise(r => setTimeout(r, 15));
-    settled = await service.get(chat.id);
-  }
-  assert.equal(settled.state, 'idle');
-  assert.equal(settled.queuedMessages, undefined);
-  assert.deepEqual(executed.map(e => e.text), ['Run immediately now', 'Edited queued 1']);
+  const settled = await context.waitFor(async () => {
+    const chatState = await service.get(chat.id);
+    assert.equal(chatState.state, 'idle');
+    assert.equal(chatState.queuedMessages, undefined);
+    assert.deepEqual(executed.map(entry => entry.text), ['Run immediately now', 'Edited queued 1']);
+    return chatState;
+  }, { timeout: 10_000 });
   const editedUserMsg = settled.messages.find(m => m.role === 'user' && m.text === 'Edited queued 1');
   assert.equal(editedUserMsg?.attachments?.[0]?.id, 'asset-b');
   assert.equal(editedUserMsg?.contextTags?.[0]?.label, '16:9');
@@ -2493,8 +2492,6 @@ test('SuperAgentConversations supports queue CRUD, sendQueuedMessageNow, auto-de
   const stoppedState = await service.stop(stopChat.id);
   assert.equal(stoppedState.state, 'cancelled');
   assert.equal(stoppedState.queuedMessages?.length, 1);
-
-  await service.close();
 }));
 
 test('SuperAgentConversations awaits closeAndWait() on steer and retries transient active-writer locks', () => fixture(async store => {
@@ -3330,11 +3327,28 @@ test('extractActionCardFromTool maps provider handoffs, low-balance failures, an
       provider: 'account',
     },
   );
-  // Negative case: BYOK provider insufficient_credits must NOT trigger an OpenDesign top-up card
+  // Negative case: BYOK provider insufficient_credits or 402 must NOT trigger an OpenDesign top-up card
   assert.equal(
     extractActionCardFromTool('openmotion_assets_use', { action: 'generate', model: 'fal:flux-pro' }, { error: 'insufficient_credits on fal account' }, false),
     undefined,
   );
+  assert.equal(
+    extractActionCardFromTool('openmotion_assets_use', { action: 'generate', model: 'fal:flux-pro' }, { error: 'HTTP 402 payment required' }, false),
+    undefined,
+  );
+  // Expanded OpenDesign account quota / past-due / 402 failures all produce top_up cards
+  for (const error of [
+    'OpenDesign quota_exceeded for this week',
+    'Weekly quota depleted on your OpenDesign account',
+    'billing_past_due',
+    'HTTP 402 from OpenDesign',
+  ]) {
+    assert.equal(
+      extractActionCardFromTool('openmotion_assets_use', { action: 'generate', model: 'account:gpt-image-2' }, { error }, false)?.kind,
+      'top_up',
+      `expected top_up card for: ${error}`,
+    );
+  }
 
   // Plan restriction uses actual account context (Go -> upgrade_go, Free -> upgrade_free, Plus -> undefined)
   const planErr = { isError: true, structuredContent: { error: { code: 'tier_model_not_entitled', message: 'Your OpenDesign plan does not include this model. Choose another model or upgrade your plan.' } } };
@@ -3434,103 +3448,312 @@ test('extractActionCardFromTool maps provider handoffs, low-balance failures, an
   assert.equal(isProviderSettingsWebArtifactUrl('http://127.0.0.1:4120/games/demo', ownOrigin), false);
 });
 
-test('Super Agent always gates billed media generation approvals even in default auto permissionMode until Always allow is granted for generation', () => fixture(async store => {
+test('Super Agent runs multimodal generation automatically by default, gates when disabled in preferences, cleans up on HTTP disconnect, and surfaces server-side onboarding/billing cards', () => fixture(async store => {
   const { readFile } = await import('node:fs/promises');
-  let generationCalls = 0;
-  const phase1 = {
-    call: async (name: string, args: any) => {
-      if (name === 'openmotion_assets_use' && args.action === 'generate') {
-        generationCalls += 1;
-        return { job: { id: `job-auto-gate-${generationCalls}`, state: 'queued', model: { id: args.model || 'account:elevenlabs-music-v2' } } };
-      }
-      return {};
-    },
-  } as unknown as Phase1Service;
+  const { gatewayFor } = await import('../gateway/service.ts');
+  const req = transport(store);
+  const waitFor = async <T>(check: () => Promise<T | null | undefined | false>, label: string, timeoutMs = 15_000): Promise<T> => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const value = await check();
+      if (value) return value;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
+  };
+  let autoService: SuperAgentConversations | undefined;
+  let gatedService: SuperAgentConversations | undefined;
+  let unblockService: SuperAgentConversations | undefined;
 
-  let firstApprovalObserved = false;
-  let secondApprovalObserved = false;
-  const service = new SuperAgentConversations(store, {
-    resolveAgent: async () => '/usr/local/bin/claude',
-    runClaude: async ({ mcpConfigPath, onEvent }) => {
-      const cfg = JSON.parse(await readFile(mcpConfigPath, 'utf8'));
-      const server = cfg.mcpServers.openmotion;
-      const callGen = (id: number, model: string, modality: string, prompt: string) =>
-        fetch(server.url, {
+  try {
+    // 0) HTTP /motion-api/super-agent/preferences defaults to autoMultimodalGeneration=true and validates input
+    const initialPrefRes = await req('/motion-api/super-agent/preferences');
+    assert.equal(initialPrefRes.status, 200);
+    assert.deepEqual(await initialPrefRes.json(), { preferences: { autoMultimodalGeneration: true } });
+
+    const invalidPrefRes = await req('/motion-api/super-agent/preferences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoMultimodalGeneration: 'yes' }),
+    });
+    assert.equal(invalidPrefRes.status, 400);
+
+    let generationCalls = 0;
+    const phase1 = {
+      call: async (name: string, args: any) => {
+        if (
+          (name === 'openmotion_assets_use' || name === 'openmotion_media_use') && args.action === 'generate'
+          || name === 'openmotion_capability_run'
+        ) {
+          if (args.prompt === 'trigger-unavailable') {
+            throw new Error('Selected model is unavailable; configure an available provider or choose a different model');
+          }
+          generationCalls += 1;
+          return { job: { id: `job-auto-gate-${generationCalls}`, state: 'queued', model: { id: args.model || 'account:elevenlabs-music-v2' } } };
+        }
+        return {};
+      },
+    } as unknown as Phase1Service;
+
+    // 1) Default autoMultimodalGeneration=true: billed calls execute directly without approval dock,
+    //    and a direct unavailable-model failure deterministically attaches a sign_in action card.
+    autoService = new SuperAgentConversations(store, {
+      resolveAgent: async () => '/usr/local/bin/claude',
+      runClaude: async ({ mcpConfigPath, onEvent }) => {
+        const cfg = JSON.parse(await readFile(mcpConfigPath, 'utf8'));
+        const server = cfg.mcpServers.openmotion;
+        const callTool = (id: number, name: string, args: Record<string, unknown>) =>
+          fetch(server.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...server.headers },
+            signal: AbortSignal.timeout(15_000),
+            body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } }),
+          });
+
+        const genRes = await (await callTool(1, 'openmotion_assets_use', {
+          action: 'generate',
+          model: 'account:gpt-image-2',
+          modality: 'image',
+          prompt: 'neon synthwave title banner',
+        })).json() as any;
+        assert.equal(genRes.result.isError, false);
+        assert.equal(generationCalls, 1);
+
+        const capRes = await (await callTool(2, 'openmotion_capability_run', {
+          capabilityId: 'music',
+          prompt: 'looping arcade synth BGM',
+        })).json() as any;
+        assert.equal(capRes.result.isError, false);
+        assert.equal(generationCalls, 2);
+
+        // Simulate Agent skipping inspect and hitting unavailable provider directly while signed out -> sign_in card
+        // (use audio modality so a developer machine with local image-only Codex installed stays deterministic)
+        const failCallId = 'tu-unavail-1';
+        await onEvent({
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: failCallId,
+              name: 'mcp__openmotion__openmotion_assets_use',
+              input: { action: 'generate', modality: 'audio', model: 'account:elevenlabs-music-v2', prompt: 'trigger-unavailable' },
+            }],
+          },
+        });
+        const unavailRes = await (await callTool(3, 'openmotion_assets_use', {
+          action: 'generate',
+          modality: 'audio',
+          model: 'account:elevenlabs-music-v2',
+          prompt: 'trigger-unavailable',
+        })).json() as any;
+        assert.equal(unavailRes.result.isError, true);
+        await onEvent({
+          type: 'user',
+          message: {
+            content: [{
+              type: 'tool_result',
+              tool_use_id: failCallId,
+              is_error: true,
+              content: unavailRes.result.content[0].text,
+            }],
+          },
+        });
+        await onEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } });
+      },
+    });
+
+    const autoChat = await autoService.create({ engine: 'claude' });
+    await autoService.start(autoChat.id, { requestId: 'req-auto-default-1', text: 'Make a game with art' }, {
+      origin: 'http://127.0.0.1:4173',
+      phase1: () => phase1,
+    });
+    const autoDone = await autoService.waitForChat(autoChat.id, AbortSignal.timeout(15_000));
+    assert.equal(autoDone.state, 'idle');
+    assert.equal(autoDone.approvals.length, 0);
+    assert.equal(generationCalls, 2);
+    const failToolMsg = autoDone.messages.find(m => m.id === 'tool:tu-unavail-1');
+    assert.equal(failToolMsg?.toolEvent?.actionCard?.kind, 'sign_in');
+    await autoService.close();
+    autoService = undefined;
+
+    // 2) Turn OFF via HTTP PATCH: billed generation MUST gate even in permissionMode='auto'
+    const disableRes = await req('/motion-api/super-agent/preferences', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ autoMultimodalGeneration: false }),
+    });
+    assert.equal(disableRes.status, 200);
+    assert.deepEqual(await disableRes.json(), { preferences: { autoMultimodalGeneration: false } });
+
+    generationCalls = 0;
+    let declineObserved = false;
+    let disconnectCleanupObserved = false;
+    let firstApprovalObserved = false;
+    let secondApprovalObserved = false;
+    gatedService = new SuperAgentConversations(store, {
+      resolveAgent: async () => '/usr/local/bin/claude',
+      runClaude: async ({ mcpConfigPath, onEvent }) => {
+        const cfg = JSON.parse(await readFile(mcpConfigPath, 'utf8'));
+        const server = cfg.mcpServers.openmotion;
+        const callGen = (id: number, model: string, modality: string, prompt: string, signal?: AbortSignal) =>
+          fetch(server.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...server.headers },
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id,
+              method: 'tools/call',
+              params: { name: 'openmotion_assets_use', arguments: { action: 'generate', model, modality, prompt } },
+            }),
+          });
+
+        // 2a) Declined call must NEVER invoke underlying generation (generationCalls stays 0)
+        const declinePromise = callGen(10, 'account:gpt-image-2', 'image', 'declined sprite');
+        const pendingDecline = await waitFor(async () => {
+          const current = await gatedService!.get(gatedChat.id);
+          return current.approvals[0];
+        }, 'decline approval');
+        declineObserved = true;
+        assert.equal(generationCalls, 0);
+        await gatedService!.answer(gatedChat.id, pendingDecline.id, false, false);
+        const declinedBody = await (await declinePromise).json() as any;
+        assert.equal(declinedBody.result.isError, true);
+        assert.equal(generationCalls, 0);
+
+        // 2b) Client HTTP disconnect while waiting on approval must clear pending card and NEVER invoke generation
+        const abortController = new AbortController();
+        const disconnectPromise = callGen(101, 'account:gpt-image-2', 'image', 'orphaned sprite', abortController.signal).catch(() => null);
+        await waitFor(async () => {
+          const current = await gatedService!.get(gatedChat.id);
+          return current.approvals.length > 0 ? current.approvals[0] : null;
+        }, 'disconnect approval');
+        abortController.abort();
+        await disconnectPromise;
+        await waitFor(async () => {
+          const current = await gatedService!.get(gatedChat.id);
+          return current.approvals.length === 0 && current.state === 'running';
+        }, 'disconnect approval cleanup');
+        disconnectCleanupObserved = true;
+        assert.equal(generationCalls, 0);
+
+        // 2c) Approve once (alwaysAllow=false) allows 1 call, still gates next call
+        const firstPromise = callGen(11, 'account:elevenlabs-music-v2', 'audio', 'playful farmyard loop');
+        const pendingFirst = await waitFor(async () => {
+          const current = await gatedService!.get(gatedChat.id);
+          return current.approvals.length > 0 ? current : null;
+        }, 'first generation approval');
+        firstApprovalObserved = true;
+        assert.equal(pendingFirst.state, 'waiting');
+        assert.equal(pendingFirst.approvals[0].kind, 'generation');
+        assert.equal(generationCalls, 0);
+        await gatedService!.answer(gatedChat.id, pendingFirst.approvals[0].id, true, false);
+        const firstBody = await (await firstPromise).json() as any;
+        assert.equal(firstBody.result.isError, false);
+        assert.equal(generationCalls, 1);
+
+        // 2d) Approve with alwaysAllow=true unlocks remaining calls in THIS chat while keeping global preference false
+        const secondPromise = callGen(12, 'account:gpt-image-2', 'image', 'farmyard backdrop');
+        const pendingSecond = await waitFor(async () => {
+          const current = await gatedService!.get(gatedChat.id);
+          return current.approvals[0];
+        }, 'second generation approval');
+        secondApprovalObserved = true;
+        assert.equal(pendingSecond.kind, 'generation');
+        assert.equal(generationCalls, 1);
+        await gatedService!.answer(gatedChat.id, pendingSecond.id, true, true);
+        const secondBody = await (await secondPromise).json() as any;
+        assert.equal(secondBody.result.isError, false);
+        assert.equal(generationCalls, 2);
+
+        // 2e) Third billed call in the same chat proceeds immediately
+        const thirdBody = await (await callGen(13, 'account:gpt-image-2', 'image', 'golden goose icon')).json() as any;
+        assert.equal(thirdBody.result.isError, false);
+        assert.equal(generationCalls, 3);
+
+        await onEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'All assets generated.' }] } });
+      },
+    });
+
+    const gatedChat = await gatedService.create({ engine: 'claude' });
+    assert.equal(gatedChat.permissionMode, 'auto');
+    await gatedService.start(gatedChat.id, { requestId: 'req-auto-gen-gate-1', text: 'Make a goose game' }, {
+      origin: 'http://127.0.0.1:4173',
+      phase1: () => phase1,
+    });
+    const done = await gatedService.waitForChat(gatedChat.id, AbortSignal.timeout(15_000));
+    assert.equal(declineObserved, true);
+    assert.equal(disconnectCleanupObserved, true);
+    assert.equal(firstApprovalObserved, true);
+    assert.equal(secondApprovalObserved, true);
+    assert.equal(generationCalls, 3);
+    assert.equal(done.generationAutoApproved, true);
+    assert.equal((await gatedService.getPreferences()).autoMultimodalGeneration, false);
+    assert.equal(done.state, 'idle');
+    await gatedService.close();
+    gatedService = undefined;
+
+    // 3) Turning autoMultimodalGeneration back ON while a chat is waiting unblocks it immediately
+    let unblockedBySettings = false;
+    unblockService = new SuperAgentConversations(store, {
+      resolveAgent: async () => '/usr/local/bin/claude',
+      runClaude: async ({ mcpConfigPath, onEvent }) => {
+        const cfg = JSON.parse(await readFile(mcpConfigPath, 'utf8'));
+        const server = cfg.mcpServers.openmotion;
+        const pendingPromise = fetch(server.url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...server.headers },
+          signal: AbortSignal.timeout(15_000),
           body: JSON.stringify({
             jsonrpc: '2.0',
-            id,
+            id: 21,
             method: 'tools/call',
-            params: { name: 'openmotion_assets_use', arguments: { action: 'generate', model, modality, prompt } },
+            params: { name: 'openmotion_media_use', arguments: { action: 'generate', provider: 'fal', model: 'flux', modality: 'image', prompt: 'castle' } },
           }),
         });
+        await waitFor(async () => {
+          const current = await unblockService!.get(unblockChat.id);
+          return current.approvals.length > 0;
+        }, 'unblock generation approval');
+        await unblockService!.updatePreferences({ autoMultimodalGeneration: true });
+        unblockedBySettings = true;
+        const res = await (await pendingPromise).json() as any;
+        assert.equal(res.result.isError, false);
+        await onEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'Resumed.' }] } });
+      },
+    });
+    const unblockChat = await unblockService.create({ engine: 'claude' });
+    await unblockService.start(unblockChat.id, { requestId: 'req-unblock-1', text: 'Draw castle' }, {
+      origin: 'http://127.0.0.1:4173',
+      phase1: () => phase1,
+    });
+    const unblockDone = await unblockService.waitForChat(unblockChat.id, AbortSignal.timeout(15_000));
+    assert.equal(unblockedBySettings, true);
+    assert.equal(generationCalls, 4);
+    assert.equal(unblockDone.state, 'idle');
+    await unblockService.close();
+    unblockService = undefined;
 
-      // 1) First billed call in default auto mode MUST still wait for user approval
-      const firstPromise = callGen(11, 'account:elevenlabs-music-v2', 'audio', 'playful farmyard loop');
-      for (let i = 0; i < 60; i++) {
-        const current = await service.get(chat.id);
-        if (current.approvals.length > 0) {
-          firstApprovalObserved = true;
-          assert.equal(current.state, 'waiting');
-          assert.equal(current.approvals[0].kind, 'generation');
-          assert.equal(generationCalls, 0);
-          // Approve once (alwaysAllow=false)
-          await service.answer(chat.id, current.approvals[0].id, true, false);
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 15));
-      }
-      const firstBody = await (await firstPromise).json() as any;
-      assert.equal(firstBody.result.isError, false);
-      assert.equal(generationCalls, 1);
-
-      // 2) Second billed call MUST still gate until user grants alwaysAllow=true on generation
-      const secondPromise = callGen(12, 'account:gpt-image-2', 'image', 'farmyard backdrop');
-      for (let i = 0; i < 60; i++) {
-        const current = await service.get(chat.id);
-        if (current.approvals.length > 0) {
-          secondApprovalObserved = true;
-          assert.equal(current.approvals[0].kind, 'generation');
-          assert.equal(generationCalls, 1);
-          await service.answer(chat.id, current.approvals[0].id, true, true);
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 15));
-      }
-      const secondBody = await (await secondPromise).json() as any;
-      assert.equal(secondBody.result.isError, false);
-      assert.equal(generationCalls, 2);
-
-      // 3) Third billed call after generation alwaysAllow=true proceeds immediately without waiting
-      const thirdBody = await (await callGen(13, 'account:gpt-image-2', 'image', 'golden goose icon')).json() as any;
-      assert.equal(thirdBody.result.isError, false);
-      assert.equal(generationCalls, 3);
-
-      await onEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'All assets generated.' }] } });
-    },
-  });
-
-  // Default create() uses permissionMode: 'auto'
-  const chat = await service.create({ engine: 'claude' });
-  assert.equal(chat.permissionMode, 'auto');
-  await service.start(chat.id, { requestId: 'req-auto-gen-gate-1', text: 'Make a goose game' }, {
-    origin: 'http://127.0.0.1:4173',
-    phase1: () => phase1,
-  });
-
-  for (let i = 0; i < 100; i++) {
-    const snap = await service.get(chat.id);
-    if (snap.state === 'idle' || snap.state === 'failed') break;
-    await new Promise(resolve => setTimeout(resolve, 20));
+    // 4) Corrupt preferences.json fails closed (requires confirmation, not cached as true) and recovers when repaired
+    await writeFile(path.join(store.directory, 'super-agent', 'preferences.json'), '{not-valid-json', 'utf8');
+    const corruptService = new SuperAgentConversations(store);
+    try {
+      assert.deepEqual(await corruptService.getPreferences(), { autoMultimodalGeneration: false });
+      // Repairing the file recovers cleanly without being poisoned by a cached fallback
+      await writeFile(path.join(store.directory, 'super-agent', 'preferences.json'), JSON.stringify({ autoMultimodalGeneration: true }), 'utf8');
+      assert.deepEqual(await corruptService.getPreferences(), { autoMultimodalGeneration: true });
+    } finally {
+      await corruptService.close();
+    }
+  } finally {
+    await Promise.allSettled([
+      autoService?.close(),
+      gatedService?.close(),
+      unblockService?.close(),
+      superAgentConversations(store).close(),
+      gatewayFor(store).close(),
+    ]);
   }
-  const done = await service.get(chat.id);
-  assert.equal(firstApprovalObserved, true);
-  assert.equal(secondApprovalObserved, true);
-  assert.equal(generationCalls, 3);
-  assert.equal(done.generationAutoApproved, true);
-  assert.equal(done.state, 'idle');
-  await service.close();
 }));
 
 test('classifySuperAgentTool omits raw MCP action/projectId echoes and Claude tool_result resets phase back to thinking', () => fixture(async store => {
