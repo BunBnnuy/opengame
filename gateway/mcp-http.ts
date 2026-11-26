@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { rpc, releaseRegistry, modernMcpServer, type McpRpcOptions } from '../mcp.ts';
-import { hasMcpEnvelope, modernMcpVersion, runModernMcpHttp } from '../shared/mcp-modern.ts';
+import { hasMcpEnvelope, loadModernMcpSdk, modernMcpVersion } from '../shared/mcp-modern.ts';
 import {
   MCP_HTTP_PATH,
   MCP_TOKEN_PREFIX,
@@ -386,7 +386,8 @@ export class McpHttpGateway {
         }
       }
       const request = new Request('http://localhost' + MCP_HTTP_PATH, { method: req.method, headers });
-      const reply = await runModernMcpHttp(request, payload, () => modernMcpServer(this.store, rpcOptions));
+      const sdk = await loadModernMcpSdk();
+      const reply = await sdk.runModernMcpHttp(request, payload, () => modernMcpServer(sdk, this.store, rpcOptions));
       res.writeHead(reply.status, reply.headers);
       res.end(reply.body);
     };

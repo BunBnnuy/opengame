@@ -4,7 +4,6 @@ import { inlineVideoUri, legacyInlineVideoUri } from './shared/inline-video.ts';
 import { publicToolName, legacyToolName, publicToolResult } from './shared/public-names.mjs';
 import { assetReadToolResult } from './shared/asset-library.ts';
 import { createInterface } from 'node:readline';
-import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import type { JSONRPCMessage, Transport } from '@modelcontextprotocol/server';
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -28,10 +27,10 @@ import { identifyHost, unknownHost } from './tracking/host.ts';
 import type { HostContext } from './tracking/host.ts';
 import { templateCatalogFor } from './prism-templates.ts';
 import { templateConfig } from './shared/template-config.ts';
-import { createMcpClientState, negotiateTemplatePresentation, showTemplateRecommendations, templatePresentationName } from './shared/mcp-template-recommendations.ts';
+import { createMcpClientState, negotiateTemplatePresentation, showTemplateRecommendations, templatePresentationName, templatePresentationUriPrefix } from './shared/mcp-template-recommendations.ts';
 import type { McpClientState } from './shared/mcp-template-recommendations.ts';
 import { gameToolAnnotations } from './shared/game-tools.ts';
-import { createModernMcpServer, hasMcpEnvelope } from './shared/mcp-modern.ts';
+import { hasMcpEnvelope, loadModernMcpSdk, type ModernMcpSdk } from './shared/mcp-modern.ts';
 import { resolvePublicOrigin } from './gateway/agent-runtimes.ts';
 
 export function mcpRegistry(profile = releaseProfile) { return createToolRegistry(profile === 'phase1' ? phase1Tools : tools, profile); }
@@ -162,15 +161,19 @@ function configureClient(client: object, profile: string, capabilities: any, sta
   if (profile === 'phase1' && Array.isArray(mimeTypes) && mimeTypes.includes(appMimeType)) videoAppClients.add(client);
 }
 
-export function modernMcpServer(store: WorkspaceStore, options: McpRpcOptions = {}) {
+export function modernMcpServer(sdk: ModernMcpSdk, store: WorkspaceStore, options: McpRpcOptions = {}) {
   const discovery = {
     serverInfo: { ...baseServerInfo, icons: serverIcons },
     capabilities: { tools: {}, ...(releaseRegistry.profile === 'phase1' ? { resources: {} } : {}) },
     ...(releaseRegistry.instructions ? { instructions: releaseRegistry.instructions } : {}),
   };
-  return createModernMcpServer(discovery, (message, capabilities) => {
+  return sdk.createModernMcpServer(discovery, (message, capabilities) => {
     const clientState = createMcpClientState();
-    configureClient(clientState, releaseRegistry.profile, capabilities, clientState);
+    const needsPresentation = message.method === 'tools/list' || message.method === 'resources/list'
+      || (message.method === 'tools/call' && publicToolName(message.params?.name) === templatePresentationName)
+      || (message.method === 'resources/read' && typeof message.params?.uri === 'string'
+        && message.params.uri.startsWith(templatePresentationUriPrefix));
+    configureClient(clientState, releaseRegistry.profile, capabilities, needsPresentation ? clientState : undefined);
     return rpc(message, store, releaseRegistry, { selection: {} }, clientState, { ...options, stateless: true });
   });
 }
@@ -213,7 +216,7 @@ async function invokeRpc(message: any, store: WorkspaceStore, registry: ReturnTy
     }
     try {
       const uri = message.params?.uri;
-      if (typeof uri === 'string' && uri.startsWith('ui://openmotion/template-recommendations/')) {
+      if (typeof uri === 'string' && uri.startsWith(templatePresentationUriPrefix)) {
         if (!clientState?.presentation || uri !== clientState.presentation.uri) throw new Error('Unknown or unnegotiated UI resource');
         return result({ contents: [clientState.presentation.content] });
       }
@@ -341,7 +344,7 @@ if (isMain(import.meta.url)) {
     async close() {},
     async send(response) { process.stdout.write(JSON.stringify(response) + '\n'); },
   };
-  const modern = serveStdio(() => modernMcpServer(store), { transport: modernTransport, legacy: 'reject', maxSubscriptions: 0 });
+  let modern: ReturnType<ModernMcpSdk['serveStdio']> | undefined;
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line.trim()) continue;
@@ -349,6 +352,12 @@ if (isMain(import.meta.url)) {
     try {
       const message: JSONRPCMessage = JSON.parse(line);
       if (hasMcpEnvelope(message)) {
+        if (!modern) {
+          const sdk = await loadModernMcpSdk();
+          modern = sdk.serveStdio(() => modernMcpServer(sdk, store), {
+            transport: modernTransport, legacy: 'reject', maxSubscriptions: 0,
+          });
+        }
         modernTransport.onmessage?.(message);
         continue;
       }
@@ -357,6 +366,6 @@ if (isMain(import.meta.url)) {
     catch { response = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }; }
     if (response) process.stdout.write(JSON.stringify(response) + '\n');
   }
-  await modern.close();
+  await modern?.close();
   await Promise.allSettled([closeTracking(await trackingByStore.get(store)), flushCodexSessionTracking(store.directory)]);
 }

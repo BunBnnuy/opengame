@@ -146,8 +146,9 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
   }
   function refreshLabels() {
     root.lang = language();
-    refreshWelcome();
-    const action = t(canPrepareDraft() ? 'clone' : 'copyPrompt');
+    const preparesDraft = canPrepareDraft();
+    refreshWelcome(preparesDraft);
+    const action = t(preparesDraft ? 'clone' : 'copyPrompt');
     root.querySelector('.omtc-list')?.setAttribute('aria-label', t('listLabel'));
     for (const node of root.querySelectorAll<HTMLElement>('[data-copy-key]')) label(node, node.dataset.copyKey as CopyKey);
     for (const state of states) {
@@ -169,7 +170,7 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
       doc.documentElement.style.colorScheme = context.theme; root.dataset.theme = context.theme;
     }
   }
-  function refreshWelcome() {
+  function refreshWelcome(preparesDraft: boolean) {
     let welcome = root.querySelector<HTMLElement>('.omtc-welcome');
     if (!snapshot?.onboarding) { welcome?.remove(); return; }
     if (!welcome) { welcome = element('section', 'omtc-welcome'); welcome.setAttribute('aria-label', t('welcomeLabel')); root.prepend(welcome); }
@@ -177,7 +178,8 @@ export function mountTemplateCards(root: HTMLElement, bootstrap: TemplateCardsBo
     const text = translations[language()].welcome;
     const recommendation = element('p'); recommendation.append(element('strong', '', text.recommendations));
     welcome.replaceChildren(element('h2', '', text.heading), element('p', '', text.introduction),
-      element('p', '', text.discovery), recommendation, element('p', '', canPrepareDraft() ? text.draft : text.clipboardDraft));
+      element('p', '', preparesDraft ? text.discovery : text.templateSearch),
+      recommendation, element('p', '', preparesDraft ? text.draft : text.clipboardDraft));
     welcome.hidden = Boolean(detail?.selected);
   }
   function cleanupView() {

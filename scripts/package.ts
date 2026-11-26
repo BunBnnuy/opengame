@@ -7,6 +7,21 @@ import { distributionFiles, requireDownloadedMedia } from './distribution.ts';
 import { zip } from './zip.mjs';
 export { zip } from './zip.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
+// Standalone ZIPs need the MCP transport and its license notices before npm setup.
+export async function packageModernMcpSdk() {
+  const { build } = await import('esbuild');
+  const { outputFiles: [sdk] } = await build({
+    entryPoints: [path.join(root, 'shared/mcp-modern-sdk.ts')],
+    bundle: true, platform: 'node', format: 'cjs', target: 'node26', minify: true, write: false,
+  });
+  const licenses = await Promise.all(['@modelcontextprotocol/server', '@modelcontextprotocol/core', 'zod'].map(async name =>
+    name + '\n' + await readFile(path.join(root, 'node_modules', name, 'LICENSE'), 'utf8')));
+  return [
+    { name: 'shared/mcp-modern-sdk.cjs', data: Buffer.from(sdk.contents) },
+    { name: 'shared/mcp-modern-sdk.LICENSE.txt', data: Buffer.from(licenses.join('\n\n')) },
+  ];
+}
+
 async function main() {
   const { packageTemplateConfig } = await import('../shared/template-config.ts');
   const { releaseProfile } = await import('../shared/mcp-registry.ts');
@@ -43,6 +58,7 @@ async function main() {
     'shared/build-info.json': { commit } };
   const entries = await Promise.all(files.sort().map(async file => ({ name: manifest.name + '/' + file,
     data: overrides[file] ? Buffer.from(JSON.stringify(overrides[file], null, 2) + '\n') : await readFile(path.join(root, file)) })));
+  for (const entry of await packageModernMcpSdk()) entries.push({ ...entry, name: manifest.name + '/' + entry.name });
   entries.push({ name: manifest.name + '/templates/game-downloads.json', data: Buffer.from(JSON.stringify({ schemaVersion: 1, games }, null, 2) + '\n') });
   await mkdir(path.join(root, 'dist'), { recursive: true });
   const output = `dist/${manifest.name}-${manifest.version}${profile === 'legacy' ? '' : '-' + profile}${templateConfig.environment === 'dev' ? '-dev' : ''}.zip`;

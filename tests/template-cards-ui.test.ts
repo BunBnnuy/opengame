@@ -208,9 +208,14 @@ test('all seven user-request languages override host locale across welcome, card
     } finally { await f.close(); }
     const manual = fixture({ draft: false });
     try {
-      const data = { ...result(), language };
+      const data = { ...result(), language, onboarding: true };
       manual.ui.update(data);
-      manual.root.querySelector<HTMLButtonElement>('article .omtc-clone')!.click(); await flush();
+      const button = manual.root.querySelector<HTMLButtonElement>('article .omtc-clone')!;
+      const welcome = manual.root.querySelector('.omtc-welcome')!.textContent!;
+      assert.equal(button.textContent, translations[language].ui.copyPrompt);
+      assert.ok(welcome.includes(button.textContent!));
+      assert.ok(!welcome.includes(cloneLabels[index]));
+      button.click(); await flush();
       assert.equal(manual.messages.length, 0);
       assert.equal(manual.copied.at(-1), recreationPrompt(data.cards[0], language));
       assert.equal(manual.root.querySelector('textarea'), null);

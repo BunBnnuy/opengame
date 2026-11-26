@@ -1,11 +1,11 @@
 import { onboardingSourceFiles } from '../shared/onboarding-templates.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { zip } from '../scripts/package.ts';
+import { packageModernMcpSdk, zip } from '../scripts/package.ts';
 import { distributionFiles } from '../scripts/distribution.ts';
 import { getWorkflow, workflowRegistry } from '../shared/workflow.ts';
 import { designSystemDocuments, designSystemRuntimeFiles } from '../packages/design-system/index.js';
-import { readFile, readdir, mkdtemp, mkdir, copyFile, rm } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -172,6 +172,39 @@ test('packaged server imports without local dependencies and captions use the se
       if (captionTracks(enabled.content)[0]?.cueCount !== 0) throw new Error('Packaged empty caption lane failed');
     `;
     const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { cwd: extracted, encoding: 'utf8', timeout: 30000 });
+    assert.equal(result.status, 0, result.stderr || result.error?.message);
+  } finally { await rm(extracted, { recursive: true, force: true }); }
+});
+
+test('standalone MCP SDK accepts stateless requests without node_modules', async () => {
+  const extracted = await mkdtemp(path.join(tmpdir(), 'motion-mcp-package-'));
+  try {
+    await mkdir(path.join(extracted, 'shared'));
+    for (const { name, data } of await packageModernMcpSdk()) {
+      await writeFile(path.join(extracted, name), data);
+    }
+    await copyFile(new URL('../shared/mcp-modern.ts', import.meta.url), path.join(extracted, 'shared/mcp-modern.ts'));
+    const script = `
+      const { loadModernMcpSdk } = await import('./shared/mcp-modern.ts');
+      const sdk = await loadModernMcpSdk();
+      const version = '2026-07-28';
+      const payload = { jsonrpc: '2.0', id: 1, method: 'server/discover', params: { _meta: {
+        'io.modelcontextprotocol/protocolVersion': version,
+        'io.modelcontextprotocol/clientInfo': { name: 'package-test', version: '1' },
+        'io.modelcontextprotocol/clientCapabilities': {},
+      } } };
+      const request = new Request('http://localhost/mcp', { method: 'POST', headers: {
+        'Content-Type': 'application/json', Accept: 'application/json',
+        'MCP-Protocol-Version': version, 'Mcp-Method': payload.method,
+      } });
+      const response = await sdk.runModernMcpHttp(request, payload, () => sdk.createModernMcpServer({
+        serverInfo: { name: 'openmotion', version: '1' }, capabilities: { tools: {} },
+      }, async () => ({ result: { tools: [] } })));
+      if (response.status !== 200 || !JSON.parse(response.body).result.supportedVersions.includes(version)) {
+        throw new Error(response.body.toString());
+      }
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: extracted, encoding: 'utf8', timeout: 30_000 });
     assert.equal(result.status, 0, result.stderr || result.error?.message);
   } finally { await rm(extracted, { recursive: true, force: true }); }
 });
