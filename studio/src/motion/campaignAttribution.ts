@@ -112,7 +112,9 @@ export type CampaignEntrySource =
   | 'opengame_resolution_gate'
   | 'opengame_studio_free_gate'
   | 'opengame_agent_upgrade'
-  | 'opengame_publish_unlisted';
+  | 'opengame_publish_unlisted'
+  | 'opengame_model_hub_bf_pill'
+  | 'opengame_explore_bf_hero';
 /**
  * The `od_entry_source` sent for these entries. AMR keeps an attribution only for registered sources, and
  * `openmotion_manage_subscription` is the source it already accepts; an unregistered value would drop the
@@ -129,6 +131,8 @@ const utmMedium: Record<CampaignEntrySource, string> = {
   opengame_studio_free_gate: 'studio_free_gate',
   opengame_agent_upgrade: 'agent_upgrade',
   opengame_publish_unlisted: 'game_publish_unlisted',
+  opengame_model_hub_bf_pill: 'model_hub_pill',
+  opengame_explore_bf_hero: 'explore_hero',
 };
 
 export function newCampaignEntryId() {

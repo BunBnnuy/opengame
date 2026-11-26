@@ -22,7 +22,11 @@ import { supportsScene } from './creativeStudios';
 import type { StudioCreation } from './CreativeWorkspace';
 import { CreationModelPicker } from './GenerationModelPickers';
 import { emptyParameters, requestParameters, type ParameterDraft } from './GenerationParameters';
+import { BLACK_FRIDAY_CAMPAIGN, campaignPricingUrl, newCampaignEntryId, pricingLinkTargetProps, useBlackFridayActive } from './campaignAttribution';
+import { setPendingAttribution, useCheckoutReturnRefresh } from './entitlementAttribution';
+import { detectMonetizationGateFromError, openMonetizationGate } from './monetization/monetizationGateBus';
 import * as tracking from './pageTracking';
+import { send } from './reporting';
 import { SoundAdvancedParameters, SoundParameters } from './SoundParameters';
 import {
   SOUND_MUSIC_TAGS,
@@ -145,6 +149,29 @@ export function SoundComposer({
 
   const unconfiguredPreferred = Boolean(gateway && preferred && !selected && preferredProvider && !preferredProvider.available);
   const accountNotIncluded = selected?.provider === 'account' && selectedProvider?.mediaEntitlement === 'not-included';
+  const studioId = studio.destination.studio.id;
+  const campaign = useBlackFridayActive();
+  const [freeGateEntryId, setFreeGateEntryId] = useState(newCampaignEntryId);
+  const markFreeGateCheckoutReturn = useCheckoutReturnRefresh('creative_studio', 'studio_free_gate');
+  const signInGateReportedRef = useRef(false);
+  const freeGateReportedRef = useRef(false);
+  useEffect(() => {
+    const showingAccountSignIn = Boolean(unconfiguredPreferred && preferredProvider?.id === 'account');
+    if (!showingAccountSignIn) { signInGateReportedRef.current = false; return; }
+    if (signInGateReportedRef.current) return;
+    signInGateReportedRef.current = true;
+    tracking.reportEntitlementGateView('creative_studio', 'studio_generate', { studio_id: studioId });
+  }, [unconfiguredPreferred, preferredProvider?.id, studioId]);
+  useEffect(() => {
+    if (!accountNotIncluded) { freeGateReportedRef.current = false; return; }
+    if (freeGateReportedRef.current) return;
+    freeGateReportedRef.current = true;
+    tracking.reportEntitlementGateView('creative_studio', 'studio_free_gate', {
+      studio_id: studioId,
+      entry_id: freeGateEntryId,
+      ...(campaign ? { campaign_id: BLACK_FRIDAY_CAMPAIGN } : {}),
+    });
+  }, [accountNotIncluded, studioId, freeGateEntryId, campaign]);
   const previewModel = selected ?? preferred;
   const parameters = previewModel ? parameterDrafts[previewModel.id] ?? emptyParameters : emptyParameters;
   const currentSpeed = typeof parameters.values.speed === 'number'
@@ -201,6 +228,8 @@ export function SoundComposer({
       tracking.reportAssetGenerationSubmit('audio', 'success', draft.references.length, false, studioContext);
     } catch (error) {
       tracking.reportAssetGenerationSubmit('audio', 'failure', draft.references.length, false, studioContext);
+      const gate = detectMonetizationGateFromError(error as { status?: number; code?: string; message?: string });
+      if (gate) openMonetizationGate({ ...gate, pageName: 'creative_studio', studioId });
       if (mounted.current) onError((error as Error).message);
     } finally {
       if (mounted.current) setBusy(false);
@@ -484,9 +513,25 @@ export function SoundComposer({
                 type="button"
                 variant="ghost"
                 className="om-button h-auto"
-                onClick={() => preferredProvider!.id === 'account'
-                  ? (openAccountSettings ?? openModelSettings)()
-                  : openProviderSettings ? openProviderSettings(preferredProvider!.id) : openModelSettings()}
+                onClick={() => {
+                  if (preferredProvider!.id === 'account') {
+                    const entryId = tracking.newTrackingId();
+                    setPendingAttribution('sign_in', 'studio_generate', entryId);
+                    send('ui_click', {
+                      page_name: 'creative_studio',
+                      area: 'asset_create',
+                      element: 'start_sign_in',
+                      hook_id: 'studio_generate',
+                      entry_id: entryId,
+                      studio_id: studioId,
+                    });
+                    (openAccountSettings ?? openModelSettings)();
+                  } else if (openProviderSettings) {
+                    openProviderSettings(preferredProvider!.id);
+                  } else {
+                    openModelSettings();
+                  }
+                }}
               >
                 {preferredProvider!.id === 'account'
                   ? t('Sign in with OpenDesign')
@@ -502,17 +547,55 @@ export function SoundComposer({
           )}
 
           {accountNotIncluded && (
-            <div className="om-creation-setup" role="status">
+            <div className="om-creation-setup" role="status" data-testid="sound-studio-free-gate">
               <RemixIcon name="bank-card-line" size={18} />
               <p className="om-muted">{t('Signed in; multimodal generation requires OpenDesign Plus or above')}</p>
-              <Button
-                type="button"
-                variant="ghost"
-                className="om-button h-auto"
-                onClick={() => (openSubscriptionSettings ?? openAccountSettings ?? openModelSettings)()}
-              >
-                {t('Manage subscription')}
-              </Button>
+              <div className="om-control-row">
+                <a
+                  className="om-button"
+                  data-primary
+                  href={campaignPricingUrl(locale, 'opengame_studio_free_gate', freeGateEntryId)}
+                  {...pricingLinkTargetProps()}
+                  onClick={() => {
+                    const clickedId = freeGateEntryId;
+                    markFreeGateCheckoutReturn(clickedId);
+                    send('ui_click', {
+                      page_name: 'creative_studio',
+                      area: 'asset_create',
+                      element: 'open_pricing',
+                      hook_id: 'studio_free_gate',
+                      entry_id: clickedId,
+                      ...(campaign ? { campaign_id: BLACK_FRIDAY_CAMPAIGN } : {}),
+                      studio_id: studioId,
+                    });
+                    window.setTimeout(() => setFreeGateEntryId(newCampaignEntryId()), 0);
+                  }}
+                >
+                  <RemixIcon name="sparkling-line" size={15} />
+                  {campaign ? t('Upgrade · 50% OFF') : t('Upgrade to Plus')}
+                  <RemixIcon name="external-link-line" size={14} />
+                </a>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="om-button h-auto"
+                  onClick={() => {
+                    const entryId = tracking.newTrackingId();
+                    setPendingAttribution('subscription', 'studio_free_gate', entryId);
+                    send('ui_click', {
+                      page_name: 'creative_studio',
+                      area: 'asset_create',
+                      element: 'manage_subscription',
+                      hook_id: 'studio_free_gate',
+                      entry_id: entryId,
+                      studio_id: studioId,
+                    });
+                    (openSubscriptionSettings ?? openAccountSettings ?? openModelSettings)();
+                  }}
+                >
+                  {t('Manage subscription')}
+                </Button>
+              </div>
             </div>
           )}
 
