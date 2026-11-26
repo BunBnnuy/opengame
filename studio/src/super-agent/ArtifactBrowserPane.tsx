@@ -2083,8 +2083,13 @@ export function ArtifactBrowserPane({
   const toolbarRemix = feedRailActive ? undefined : toolbarGameAction;
   const toolbarCloudShare = canCloudShare;
   const [gameInfoOpen, setGameInfoOpen] = useState(false);
-  // Likes are saved by the local game service, which knows bundled templates but not external community links.
-  const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && activeGameProjectId && isGameTrial);
+  // Bundled templates save likes in the local game service; external community links are not in it,
+  // so their like / dislike is kept in this browser only (front-end only until a shared store exists).
+  const communityReactionId = activeArtifact?.kind === 'game-project' && !activeArtifact.projectId
+    ? communityGames.find(game => `game:${game.id}` === activeArtifact.id)?.id
+    : undefined;
+  const [communityReactions, setCommunityReactions] = useState<Record<string, -1 | 0 | 1>>(readCommunityReactions);
+  const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && (communityReactionId || (activeGameProjectId && isGameTrial)));
   // Viewer reactions from the local game service, loaded once while the rail is in use.
   const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }>>({});
   const reactionsRequestRef = useRef<Promise<Record<string, { reaction: -1 | 0 | 1; likes: number; dislikes: number }>> | null>(null);
@@ -2107,7 +2112,10 @@ export function ArtifactBrowserPane({
     if (!feedRailActive || !canReactToGame || !activeGameProjectId || gameReactions[activeGameProjectId]) return;
     void loadGameReactions().catch(() => { /* offline: clicking Like explains why it cannot save */ });
   }, [activeGameProjectId, canReactToGame, feedRailActive, gameReactions, loadGameReactions]);
-  const activeReaction = activeGameProjectId
+  const communityReaction = communityReactionId ? communityReactions[communityReactionId] ?? 0 : 0;
+  const activeReaction = communityReactionId
+    ? { reaction: communityReaction, likes: Number(communityReaction === 1), dislikes: Number(communityReaction === -1) }
+    : activeGameProjectId
     ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0, dislikes: bundledMatch?.dislikes ?? 0 }
     : null;
   // One like request per game at a time; other games stay clickable while it saves.
@@ -2115,6 +2123,14 @@ export function ArtifactBrowserPane({
   const likeSaving = Boolean(activeGameProjectId && likesSaving.has(activeGameProjectId));
   // value 1 = like, -1 = dislike; pressing the active one again clears it.
   const toggleGameReaction = useCallback((value: 1 | -1) => {
+    if (communityReactionId) {
+      setCommunityReactions(prev => {
+        const next = { ...prev, [communityReactionId]: prev[communityReactionId] === value ? 0 as const : value };
+        writeCommunityReactions(next);
+        return next;
+      });
+      return;
+    }
     const gameId = activeGameProjectId;
     if (!gameId || likesSaving.has(gameId)) return;
     setLikesSaving(prev => new Set(prev).add(gameId));
@@ -2129,7 +2145,7 @@ export function ArtifactBrowserPane({
         rest.delete(gameId);
         return rest;
       }));
-  }, [activeGameProjectId, gameReactions, likesSaving, loadGameReactions, onNotify, t]);
+  }, [activeGameProjectId, communityReactionId, gameReactions, likesSaving, loadGameReactions, onNotify, t]);
 
   const webColorScheme: BrowserColorScheme = webState?.colorScheme ?? 'auto';
   const webZoom = webState?.zoom ?? 1;
@@ -2566,16 +2582,19 @@ export function ArtifactBrowserPane({
               </Tooltip>
             </>
           )}
-          <Tooltip label={t('Reload')}>
-            <IconButton
-              variant="ghost"
-              className="motion-icon-button"
-              aria-label={t('Reload')}
-              disabled={!activeArtifact}
-              onClick={handleReload}
-              icon={<RemixIcon name="refresh-line" size={15} />}
-            />
-          </Tooltip>
+          {/* The template rail has its own Replay, so the toolbar drops this one while it shows. */}
+          {!feedRailActive && (
+            <Tooltip label={t('Reload')}>
+              <IconButton
+                variant="ghost"
+                className="motion-icon-button"
+                aria-label={t('Reload')}
+                disabled={!activeArtifact}
+                onClick={handleReload}
+                icon={<RemixIcon name="refresh-line" size={15} />}
+              />
+            </Tooltip>
+          )}
         </div>
 
         <div className="om-sa-address-wrap">
@@ -3814,4 +3833,23 @@ export function ArtifactBrowserPane({
       </div>
     </aside>
   );
+}
+
+// Like / dislike for external community templates, kept in this browser (the local game service does not know them).
+const COMMUNITY_REACTIONS_KEY = 'opengame.communityReactions';
+function readCommunityReactions(): Record<string, -1 | 0 | 1> {
+  try {
+    const parsed: unknown = JSON.parse(globalThis.localStorage?.getItem(COMMUNITY_REACTIONS_KEY) ?? '{}');
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, -1 | 0 | 1> = {};
+    for (const [id, value] of Object.entries(parsed)) if (value === 1 || value === -1) out[id] = value;
+    return out;
+  } catch {
+    return {};
+  }
+}
+function writeCommunityReactions(reactions: Record<string, -1 | 0 | 1>) {
+  try {
+    globalThis.localStorage?.setItem(COMMUNITY_REACTIONS_KEY, JSON.stringify(reactions));
+  } catch { /* storage full or blocked: the choice still shows for this session */ }
 }
