@@ -43,6 +43,7 @@ import {
 import {
   clampMs,
   classifyRejectionError,
+  extractRequestReferenceMeta,
   createStageTimingTracker,
   generationTrackingFields,
   jobTrackingHost,
@@ -413,10 +414,7 @@ export class ModelGateway {
     const requestId = randomUUID();
     const entrySurface: MediaGenerationEntrySurface = meta?.entrySurface ?? 'unknown';
     const destination: MediaGenerationDestination = input.library ? 'library' : 'project';
-    const paramImagesCount = input.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters) && Array.isArray((input.parameters as { images?: unknown }).images)
-      ? ((input.parameters as { images: unknown[] }).images).length : 0;
-    const rawRefCount = (Array.isArray(input.library?.references) ? input.library.references.length : 0) + (typeof input.referenceAsset === 'string' && input.referenceAsset ? 1 : 0) + paramImagesCount;
-    const isEdit = rawRefCount > 0 || Boolean(input.library?.parentVersionId);
+    const { referenceCount: rawRefCount, isEdit } = extractRequestReferenceMeta(input);
     const hasIdempotencyKey = typeof input.idempotencyKey === 'string' && input.idempotencyKey.length > 0;
     const requestedMode = typeof input.mode === 'string' && (mediaGenerationModes as readonly string[]).includes(input.mode)
       ? input.mode as MediaGenerationMode : undefined;

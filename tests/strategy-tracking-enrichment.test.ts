@@ -1061,9 +1061,13 @@ test('Media tracking review regressions: storage PUT 403, Cloud entitlement 403,
   const empty403Res = events.find(e => e.event === 'media_generation_result' && e.properties.job_id === empty403Job.id);
   assert.equal(empty403Res?.properties.http_status, 403);
   assert.equal(empty403Res?.properties.upstream_error_code, undefined);
+  assert.equal(empty403Res?.properties.error_code, 'AUTH_REJECTED');
+  assert.equal(empty403Res?.properties.error_category, 'auth_credential');
   const unknown403Res = events.find(e => e.event === 'media_generation_result' && e.properties.job_id === unknown403Job.id);
   assert.equal(unknown403Res?.properties.http_status, 403);
   assert.equal(unknown403Res?.properties.upstream_error_code, 'other');
+  assert.equal(unknown403Res?.properties.error_code, 'PROVIDER_ERROR');
+  assert.equal(unknown403Res?.properties.error_category, 'upstream_error');
   assert.doesNotMatch(JSON.stringify(events), /caller-secret-token-slug|model_region_blocked_xyz/);
 
   // Assert video /content 403 + video params + queued-resume cancel
@@ -1625,7 +1629,12 @@ test('pre-gateway rejections (/api/generations 503, /api/capabilities/run 503, p
       const r1 = await fetch(`${baseUrl}/motion-api/generations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Origin: baseUrl },
-        body: JSON.stringify({ modality: 'video', prompt: 'Ocean wave', idempotencyKey: 'k-503-gen', library: {} }),
+        body: JSON.stringify({
+          modality: 'video',
+          prompt: 'Ocean wave',
+          idempotencyKey: 'k-503-gen',
+          parameters: { images: ['ref-a.png', 'ref-b.png'] },
+        }),
       });
       assert.equal(r1.status, 503);
 
@@ -1698,6 +1707,10 @@ test('pre-gateway rejections (/api/generations 503, /api/capabilities/run 503, p
     const rejected = sent.filter(e => e.event === 'media_generation_rejected');
     const studioNotOpen = rejected.filter(e => e.properties.rejection_reason === 'STUDIO_NOT_OPEN');
     assert.equal(studioNotOpen.length, 2);
+    const video503Req = sent.find(e => e.event === 'media_generation_requested'
+      && e.properties.request_id === studioNotOpen.find(r => r.properties.modality === 'video')?.properties.request_id);
+    assert.equal(video503Req?.properties.reference_count, 2);
+    assert.equal(video503Req?.properties.is_edit, true);
     assert.ok(studioNotOpen.some(e => e.properties.modality === 'video' && e.properties.executor_kind === 'gateway' && e.properties.entry_surface === 'studio'));
     assert.ok(studioNotOpen.some(e => e.properties.modality === '3d' && e.properties.executor_kind === 'script' && e.properties.spatial_kind === 'asset'));
 

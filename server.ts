@@ -24,7 +24,7 @@ import { collectWorkspaceResources } from './gateway/super-agent-resources.ts';
 import { listTaskWorkspaceEntries, readTaskWorkspaceFile, resolveBrowsableRoots } from './gateway/super-agent-workspace.ts';
 import { assetHttp } from './gateway/asset-http.ts';
 import { capabilityDiscover, capabilityRun, loadCapabilityCatalog, syncCapabilityRemoteConfig } from './gateway/capability-center.ts';
-import { isMediaTelemetryModality, recordPreGatewayRejection, spatialKindForCapability } from './gateway/media-telemetry.ts';
+import { extractRequestReferenceMeta, isMediaTelemetryModality, recordPreGatewayRejection, spatialKindForCapability } from './gateway/media-telemetry.ts';
 import { findCapability } from './shared/capability-registry.ts';
 import { getWorkflow } from './shared/workflow.ts';
 import { attachmentDisposition } from './shared/http-header.ts';
@@ -1405,7 +1405,7 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
             ? cap.modality
             : isMediaTelemetryModality(body?.modality) ? body.modality : undefined;
           if (resolvedModality && cap?.executor.kind !== 'service') {
-            const refCount = Array.isArray(body?.references) ? body.references.length : 0;
+            const { referenceCount, isEdit } = extractRequestReferenceMeta(body);
             recordPreGatewayRejection(context.tracking, {
               modality: resolvedModality,
               executorKind: cap?.executor.kind === 'script' ? 'script' : 'gateway',
@@ -1413,8 +1413,8 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
               spatialKind: spatialKindForCapability(cap?.id),
               entrySurface: 'studio',
               destination: 'library',
-              referenceCount: refCount,
-              isEdit: refCount > 0 || Boolean(body?.parentVersionId),
+              referenceCount,
+              isEdit,
               hasIdempotencyKey: typeof body?.requestId === 'string' && body.requestId.length > 0,
               parameters: body?.parameters && typeof body.parameters === 'object' && !Array.isArray(body.parameters) ? body.parameters : undefined,
               reason: 'STUDIO_NOT_OPEN',
@@ -1449,16 +1449,15 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
         if (!context.studio?.alive()) {
           const body = await input(req).catch(() => undefined);
           if (isMediaTelemetryModality(body?.modality)) {
-            const refCount = (Array.isArray(body?.library?.references) ? body.library.references.length : 0)
-              + (typeof body?.referenceAsset === 'string' && body.referenceAsset ? 1 : 0);
+            const { referenceCount, isEdit } = extractRequestReferenceMeta(body);
             recordPreGatewayRejection(context.tracking, {
               modality: body.modality,
               executorKind: 'gateway',
               capabilityId: typeof body?.capabilityId === 'string' ? body.capabilityId : typeof body?.library?.capabilityId === 'string' ? body.library.capabilityId : undefined,
               entrySurface: 'studio',
               destination: body?.library ? 'library' : 'project',
-              referenceCount: refCount,
-              isEdit: refCount > 0 || Boolean(body?.library?.parentVersionId),
+              referenceCount,
+              isEdit,
               hasIdempotencyKey: typeof body?.idempotencyKey === 'string' && body.idempotencyKey.length > 0,
               parameters: body?.parameters && typeof body.parameters === 'object' && !Array.isArray(body.parameters) ? body.parameters : undefined,
               reason: 'STUDIO_NOT_OPEN',

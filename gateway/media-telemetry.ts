@@ -62,6 +62,25 @@ export function spatialKindForCapability(capabilityId?: string, scriptId?: strin
   return undefined;
 }
 
+export function extractRequestReferenceMeta(input?: {
+  references?: unknown;
+  referenceAsset?: unknown;
+  parentVersionId?: unknown;
+  parameters?: unknown;
+  library?: { references?: unknown; parentVersionId?: unknown } | null;
+}): { referenceCount: number; isEdit: boolean } {
+  const paramImagesCount = input?.parameters && typeof input.parameters === 'object' && !Array.isArray(input.parameters)
+    && Array.isArray((input.parameters as { images?: unknown }).images)
+    ? (input.parameters as { images: unknown[] }).images.length
+    : 0;
+  const topRefs = Array.isArray(input?.references) ? input.references.length : 0;
+  const libRefs = Array.isArray(input?.library?.references) ? input.library.references.length : 0;
+  const refAsset = typeof input?.referenceAsset === 'string' && input.referenceAsset ? 1 : 0;
+  const referenceCount = topRefs + libRefs + refAsset + paramImagesCount;
+  const isEdit = referenceCount > 0 || Boolean(input?.parentVersionId ?? input?.library?.parentVersionId);
+  return { referenceCount, isEdit };
+}
+
 export function providerTrackingMeta(model: Model) {
   const provider_kind: 'builtin' | 'custom' | 'account' | 'agent' =
     model.provider === 'account' ? 'account'

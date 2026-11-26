@@ -8,6 +8,7 @@ import { AssetLibrary } from './asset-library.ts';
 import { preflightAssetCapabilityGenerate } from './capability-center.ts';
 import {
   classifyRejectionError,
+  extractRequestReferenceMeta,
   isMediaTelemetryModality,
   recordPreGatewayRejection,
   spatialKindForCapability,
@@ -74,7 +75,7 @@ export async function assetOperation(
           : isMediaTelemetryModality(cap?.modality) ? cap.modality : undefined;
         if (resolvedModality) {
           const { reason, category } = classifyRejectionError(error);
-          const refCount = Array.isArray(args.references) ? args.references.length : 0;
+          const { referenceCount, isEdit } = extractRequestReferenceMeta(args);
           recordPreGatewayRejection(effectiveTracking, {
             modality: resolvedModality,
             executorKind: cap?.executor.kind === 'script' ? 'script' : 'gateway',
@@ -82,8 +83,8 @@ export async function assetOperation(
             spatialKind: spatialKindForCapability(cap?.id),
             entrySurface,
             destination: 'library',
-            referenceCount: refCount,
-            isEdit: refCount > 0 || Boolean(args.parentVersionId),
+            referenceCount,
+            isEdit,
             hasIdempotencyKey: typeof args.requestId === 'string' && args.requestId.length > 0,
             parameters: args.parameters && typeof args.parameters === 'object' && !Array.isArray(args.parameters) ? args.parameters : undefined,
             reason,

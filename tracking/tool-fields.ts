@@ -332,13 +332,16 @@ export function mediaGenerationError(error: unknown, phase?: string): MediaGener
   if (upstreamCode === 'insufficient_balance' || status === 402) return 'BALANCE_LOW';
   if (upstreamCode === 'tier_model_not_entitled' || upstreamCode === 'tier_request_kind_not_entitled' || upstreamCode === 'model_access_denied') return 'PLAN_NOT_ENTITLED';
   if (upstreamCode === 'tier_limit_exceeded' || upstreamCode === 'rate_limit_exceeded' || status === 429) return 'RATE_LIMITED';
-  if (upstreamCode === 'unauthorized' || status === 401 || status === 403) return 'AUTH_REJECTED';
+  if (upstreamCode === 'unauthorized' || status === 401) return 'AUTH_REJECTED';
   if (upstreamCode === 'invalid_request' || upstreamCode === 'asset_too_large' || upstreamCode === 'unsupported_media_type' || status === 400 || status === 413 || status === 422) return 'INVALID_REQUEST';
   if (status !== undefined && status >= 500 && status <= 599) return 'UPSTREAM_5XX';
   if (phase === 'remote_task') return 'REMOTE_FAILED';
   if (lower.includes('plan does not include') || lower.includes('upgrade your plan')) return 'PLAN_NOT_ENTITLED';
   if (lower.includes('balance') || lower.includes('credit') || lower.includes('insufficient') || lower.includes('quota') || lower.includes('entitlement')) return 'BALANCE_LOW';
-  if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key') || lower.includes('credentials') || lower.includes('personal engine key') || lower.includes('sign-in is no longer accepted') || lower.includes('sign-in was rejected')) return 'AUTH_REJECTED';
+  if (
+    !upstreamCode
+    && (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key') || lower.includes('credentials') || lower.includes('personal engine key') || lower.includes('sign-in is no longer accepted') || lower.includes('sign-in was rejected'))
+  ) return 'AUTH_REJECTED';
   if (lower.includes('429') || lower.includes('rate limit') || lower.includes('concurrency limit')) return 'RATE_LIMITED';
   if (lower.includes('configuration changed') || lower.includes('origin changed') || lower.includes('account changed')) return 'CONFIG_CHANGED';
   if (lower.includes('no longer available') || lower.includes('unavailable')) return 'PROVIDER_UNAVAILABLE';
@@ -348,6 +351,7 @@ export function mediaGenerationError(error: unknown, phase?: string): MediaGener
   if (lower.includes('download')) return 'DOWNLOAD_FAILED';
   if (lower.includes('fetch failed') || lower.includes('econnreset') || lower.includes('enotfound') || lower.includes('econnrefused') || lower.includes('socket hang up') || lower.includes('public dns') || lower.includes('check your connection')) return 'NETWORK_ERROR';
   if (lower.includes('task failed') || lower.includes('remote') || lower.includes('generation failed') || lower.includes('generation cancelled') || lower.includes('generation canceled')) return 'REMOTE_FAILED';
+  if (status === 403 && !upstreamCode) return 'AUTH_REJECTED';
   return 'PROVIDER_ERROR';
 }
 
