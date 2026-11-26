@@ -967,7 +967,7 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
         return json(res, 405, { error: 'Unsupported Super Agent preferences request' });
       }
       if (url.pathname === '/api/super-agent/chats') {
-        if (req.method === 'GET') return json(res, 200, { conversations: await superAgent.list() });
+        if (req.method === 'GET') return json(res, 200, { conversations: await superAgent.list(url.searchParams.get('gameId') ?? undefined) });
         if (req.method === 'POST') {
           const data = req.headers['content-type']?.includes('application/json') ? await input(req, 64 * 1024) : {};
           return json(res, 200, { conversation: await superAgent.create(data) });

@@ -63,7 +63,7 @@ import {
 } from './BrowserAnnotationOverlay';
 import { fileAttachmentIcon, resourceIcon } from './ResourcePickerDialog';
 import { GamePublishPanel } from './gamePublish/GamePublishPanel';
-import { gamePublishActions, useGamePublishSession } from './gamePublish/gamePublishStore';
+import { gamePublishActions, useGamePublishSession, type GamePublishChooseOptions } from './gamePublish/gamePublishStore';
 import {
   captureSuperAgentPreviewSnapshot,
   readSuperAgentFileContent,
@@ -1861,6 +1861,7 @@ export function ArtifactBrowserPane({
   onClosePane,
   onAttachArtifact,
   onUseGameInAgent,
+  onChooseDouyin,
   pendingDeployArtifactId,
   onConsumeDeployRequest,
   pendingCodeFile,
@@ -1894,6 +1895,7 @@ export function ArtifactBrowserPane({
   onClosePane: () => void;
   onAttachArtifact: (artifact: SuperAgentArtifact) => void;
   onUseGameInAgent?: (artifact: SuperAgentArtifact) => void;
+  onChooseDouyin?: (artifactId: string, options: GamePublishChooseOptions) => void;
   pendingDeployArtifactId?: string | null;
   onConsumeDeployRequest?: () => void;
   pendingCodeFile?: { artifactId: string; filePath: string; seq: number } | null;
@@ -3721,6 +3723,7 @@ export function ArtifactBrowserPane({
           <GamePublishPanel
             artifactId={activeArtifact.id}
             coverUrl={`/motion-api/games/${encodeURIComponent(publishGameId)}/play/assets/cover.png`}
+            onChooseDouyin={onChooseDouyin}
             onNotify={onNotify}
           />
         )}

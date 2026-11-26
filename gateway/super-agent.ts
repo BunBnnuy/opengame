@@ -1374,7 +1374,7 @@ export class SuperAgentConversations {
     return chat;
   }
 
-  async list(): Promise<SuperAgentChatSummary[]> {
+  async list(gameId?: string): Promise<SuperAgentChatSummary[]> {
     const dir = path.join(this.root, 'chats');
     const names = await readdir(dir).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return [];
@@ -1385,6 +1385,21 @@ export class SuperAgentConversations {
         .filter(name => name.endsWith('.json') && isSuperAgentId(name.slice(0, -5)))
         .map(name => this.readChat(name.slice(0, -5), false)),
     );
+    if (gameId) {
+      return chats.flatMap(chat => {
+        const artifact = chat.artifacts.find(item => item.kind === 'game-project' && item.projectId === gameId);
+        if (!artifact) return [];
+        // Starting a game attaches it to the first prompt. Simply previewing it can add an artifact later.
+        const beganWithGame = Boolean(chat.messages.find(message => message.role === 'user')
+          ?.attachments?.some(item => item.kind === 'game-project' && item.id === gameId));
+        return [{ chat, beganWithGame, linkedAt: artifact.createdAt }];
+      }).sort((a, b) =>
+        Number(b.beganWithGame) - Number(a.beganWithGame)
+        || a.linkedAt - b.linkedAt
+        || a.chat.createdAt - b.chat.createdAt
+        || a.chat.id.localeCompare(b.chat.id),
+      ).slice(0, 200).map(({ chat }) => summarizeSuperAgentChat(chat));
+    }
     return chats
       .sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.updatedAt - a.updatedAt)
       .slice(0, 200)

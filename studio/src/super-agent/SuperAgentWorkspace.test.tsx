@@ -2078,6 +2078,68 @@ it('enters pure Coding mode from Explore more and renders sidebar/header intent 
   expect(document.querySelector('.om-sa-stream-title-icon[data-tone="coding"]')).toBeTruthy();
 });
 
+it('dispatches existing-chat handoffs only to the matching loaded conversation', async () => {
+  clearSuperAgentCache();
+  const chat: SuperAgentChat = {
+    ...sampleChat, title: 'Publishable game', intent: 'game', state: 'running', approvals: [],
+    artifacts: [], activeArtifactId: undefined,
+  };
+  const otherChat: SuperAgentChat = {
+    ...chat, id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', title: 'Another conversation', state: 'idle',
+  };
+  const chatPath = `${SUPER_AGENT_API}/chats`;
+  const onChatIdChange = vi.fn();
+  const postToChat = vi.fn();
+  let finishTurn!: () => void;
+  const turnInFlight = new Promise<void>(resolve => { finishTurn = resolve; });
+  const fallbackFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.startsWith(chatPath) && init?.method === 'POST') {
+      postToChat(url, JSON.parse(String(init.body)));
+      if (url === `${chatPath}/${CHAT_ID}/turn`) await turnInFlight;
+      return Response.json({ conversation: chat });
+    }
+    if (url === `${chatPath}/${CHAT_ID}`) return Response.json({ conversation: chat });
+    if (url === `${chatPath}/${otherChat.id}`) return Response.json({ conversation: otherChat });
+    return fallbackFetch(input, init);
+  };
+
+  const render = (chatId: string | null) => act(async () => root.render(
+    <I18nProvider initialLocale="en">
+      <SuperAgentWorkspace active chatId={chatId} onChatIdChange={onChatIdChange}
+        onOpenDesignProject={vi.fn()} onOpenMotionProject={vi.fn()} onOpenAsset={vi.fn()}
+        onOpenBrandKit={vi.fn()} onOpenAgentSettings={vi.fn()} onOpenMcp={vi.fn()}
+      />
+    </I18nProvider>,
+  ));
+  const title = () => container.querySelector('.om-sa-stream-title')?.textContent;
+  const instructions = 'Start with Step 1 · Get a Mini Game AppID.';
+  const handoff = (prompt: string) => act(async () => queueSuperAgentHandoff({
+    existingChatId: CHAT_ID, newChat: false, autoSend: true, mode: 'game', prompt, hiddenInstructions: instructions,
+  }));
+
+  await render(CHAT_ID);
+  await vi.waitFor(() => expect(title()).toBe(chat.title));
+  await handoff('Publish the game to Douyin');
+  expect(postToChat).toHaveBeenCalledExactlyOnceWith(`${chatPath}/${CHAT_ID}/turn`, expect.objectContaining({
+    text: 'Publish the game to Douyin', hiddenInstructions: instructions, mode: 'game', followUpBehavior: 'queue',
+  }));
+
+  await handoff('Follow-up queued before navigating');
+  await render(otherChat.id);
+  await vi.waitFor(() => expect(title()).toBe(otherChat.title));
+  await act(async () => finishTurn());
+  await flush();
+  expect(title()).toBe(otherChat.title);
+
+  await render(null);
+  await handoff('Handoff with no conversation');
+  await flush();
+  expect(postToChat).toHaveBeenCalledTimes(1);
+  expect(onChatIdChange).not.toHaveBeenCalled();
+});
+
 it('auto-sends queued game handoffs from Game Studio, renders gamepad-line icon, and views/codes game artifacts', async () => {
   const GAME_CHAT_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
   const GAME_ID = 'game-star-99';
