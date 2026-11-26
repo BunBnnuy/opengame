@@ -30,6 +30,7 @@ import { findLandingScene } from '../shared/studio-catalog.ts';
 import { isStandaloneSpaPath } from '../shared/spa-routes.ts';
 import { imageFeatures, imageFeaturePrompt } from '../shared/image-features.ts';
 import { videoFeatures, videoFeaturePrompt } from '../shared/video-features.ts';
+import { generationOptions } from '../shared/generation-options.ts';
 
 const service = (store: any) =>
   new Phase1Service(store, pluginRoot, {
@@ -1291,6 +1292,44 @@ test('3d-asset capability gates honestly on AMR 3d_generations and executes Trip
       assert.equal(submitted3dTasks[beforeAutoOriginal].operation, 'rig');
       assert.equal(submitted3dTasks[beforeAutoOriginal].parameters.original_model_task_id, rigOnly.result.baseTaskId);
       assert.equal(autoRig.result.operation, 'rig');
+      assert.equal(autoRig.result.animation, undefined);
+      assert.equal(autoRig.result.requestedAnimations, undefined);
+
+      // Combining operation="rig" with an animation rigPreset promotes to rig_retarget so provenance matches actual retarget execution.
+      const beforeRigWithPreset = submitted3dTasks.length;
+      const rigPromoted = await api.call('openmotion_capability_run', {
+        action: 'run',
+        requestId: 'tripo-rig-with-walk-preset',
+        capabilityId: '3d-asset',
+        model: 'opendesign:tripo-3.0',
+        options: { operation: 'rig', rigPreset: 'mixamo-walk' },
+        parameters: {
+          slim: false,
+          original_model_task_id: rigOnly.result.baseTaskId,
+        },
+        name: 'Knight Rig Walk Promoted',
+      });
+      assert.equal(submitted3dTasks.length - beforeRigWithPreset, 2);
+      assert.equal(submitted3dTasks[beforeRigWithPreset].operation, 'rig');
+      assert.equal(submitted3dTasks[beforeRigWithPreset + 1].operation, 'retarget');
+      assert.equal(rigPromoted.result.operation, 'rig_retarget');
+      assert.equal(rigPromoted.result.animation, 'preset:walk');
+
+      // Any OpenDesign audio model matching isSfxModelText exposes duration_seconds, loop, and prompt_influence.
+      const customSfxOpts = generationOptions({
+        id: 'opendesign:custom-sfx-v2',
+        provider: 'opendesign',
+        modelId: 'custom-sfx-v2',
+        label: 'Custom SFX v2',
+        modality: 'audio',
+        mode: 'text-to-audio',
+        source: 'discovered',
+        enabled: true,
+      });
+      assert.deepEqual(
+        customSfxOpts?.fields.map(field => field.key),
+        ['duration_seconds', 'loop', 'prompt_influence'],
+      );
     } finally {
       clearOpenDesign3dDiscoveryCache();
     }

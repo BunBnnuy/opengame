@@ -253,12 +253,12 @@ export const asset3dCapabilityControls: readonly CapabilityControl[] = [
   },
   {
     key: 'quality',
-    label: 'Mesh & texture budget',
+    label: 'Mesh face budget',
     defaultValue: 'hero-balanced',
     choices: [
-      { value: 'prop-low', label: 'Prop (≤5k faces, 1K tex)', prompt: 'low-poly budget (~5,000 faces, 1024px slimmed textures) for signature weapons or instanced foreground landmarks (reuse >= 2)' },
-      { value: 'hero-balanced', label: 'Hero balanced (≤10k faces, 1K tex)', prompt: 'default focal actor budget (~10,000 faces, 1024px slimmed textures) for player hero, primary boss/rival, or hero vehicle' },
-      { value: 'hero-high', label: 'Hero high (≤18k faces, 2K tex)', prompt: 'high-detail showcase budget (~18,000 faces, 2048px slimmed textures) for close-up centerpiece hero or boss' },
+      { value: 'prop-low', label: 'Prop (≤5k faces)', prompt: 'low-poly face budget (~5,000 faces; automatic WebP texture slimming) for signature weapons or instanced foreground landmarks (reuse >= 2)' },
+      { value: 'hero-balanced', label: 'Hero balanced (≤10k faces)', prompt: 'default focal actor face budget (~10,000 faces; automatic WebP texture slimming) for player hero, primary boss/rival, or hero vehicle' },
+      { value: 'hero-high', label: 'Hero high (≤18k faces)', prompt: 'high-detail showcase face budget (~18,000 faces; automatic WebP texture slimming) for close-up centerpiece hero or boss' },
     ],
   },
   {

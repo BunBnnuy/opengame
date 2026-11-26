@@ -381,7 +381,7 @@ export function generationOptions(model: Model, hasInputImage = false): Generati
     number('duration_seconds', 'Duration (seconds)', undefined, 0.5, 22, 0.5),
     toggle('loop', 'Seamless loop'),
   ];
-  if (isOpenDesignMedia(model) && model.modality === 'audio' && (model.modelId === 'elevenlabs-sound-v3' || model.modelId === 'elevenlabs-sound-effects-v3')) fields = [
+  if (isOpenDesignMedia(model) && model.modality === 'audio' && isSfxModelText(model.modelId)) fields = [
     number('duration_seconds', 'Duration (seconds)', undefined, 0.5, 30, 0.5),
     toggle('loop', 'Seamless loop'),
     number('prompt_influence', 'Prompt influence', 0.3, 0, 1, 0.05),

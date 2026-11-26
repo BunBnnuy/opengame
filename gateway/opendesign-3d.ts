@@ -647,6 +647,8 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
       throw new Error('3d-asset text_to_model requires a non-empty prompt');
     }
     effectiveOp = hasRetargetAnimation ? 'rig_retarget' : 'rig';
+  } else if (effectiveOp === 'rig' && hasRetargetAnimation) {
+    effectiveOp = 'rig_retarget';
   }
 
   const checkpointPath = checkpointFileFor(ctx.store, '3d', ctx.requestId);
@@ -662,6 +664,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
   const { params: meshParams, faceLimit } = sanitizeMeshParameters(params, preset.faceLimit);
   let baseTaskId = originalTaskIdParam ?? checkpoint.baseTaskId;
   let rigTaskId = checkpoint.rigTaskId;
+  let retargetRan = false;
   let finalTask: TripoTaskResult;
 
   if (effectiveOp === 'text_to_model') {
@@ -742,6 +745,7 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
     });
     rigTaskId = rigTask.taskId;
     if (effectiveOp === 'rig_retarget' && hasRetargetAnimation) {
+      retargetRan = true;
       finalTask = await submitAndWaitTask(fetcher, config, {
         model: modelId,
         operation: 'retarget',
@@ -771,6 +775,9 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
     delete passthrough.quad;
     if (effectiveOp === 'retarget' || effectiveOp === 'convert') {
       passthrough.out_format ??= 'glb';
+    }
+    if (effectiveOp === 'retarget') {
+      retargetRan = true;
     }
     if (effectiveOp === 'retarget' && animation && !passthrough.animation) {
       passthrough.animation = animation;
@@ -816,8 +823,8 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
         taskId: finalTask.taskId,
         ...(baseTaskId && baseTaskId !== finalTask.taskId ? { baseTaskId } : {}),
         ...(rigTaskId ? { rigTaskId } : {}),
-        ...(animation ? { animation } : {}),
-        ...(animationsList.length > 0 ? { requestedAnimations: animationsList } : {}),
+        ...(retargetRan && animation ? { animation } : {}),
+        ...(retargetRan && animationsList.length > 0 ? { requestedAnimations: animationsList } : {}),
         faceLimit,
         rawBytes,
         bytes: finalGlb.bytes,
