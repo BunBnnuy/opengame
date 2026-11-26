@@ -12147,7 +12147,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* safe: when the rail is taller than the pane, start at the top so every button stays reachable. */
+  justify-content: safe center;
   gap: 14px;
   width: 68px;
   padding: 12px 0;

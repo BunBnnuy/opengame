@@ -2080,18 +2080,26 @@ export function ArtifactBrowserPane({
   const canReactToGame = Boolean(activeArtifact?.kind === 'game-project' && activeGameProjectId && isGameTrial);
   // Viewer reactions from the local game service, loaded once while the rail is in use.
   const [gameReactions, setGameReactions] = useState<Record<string, { reaction: -1 | 0 | 1; likes: number }>>({});
-  const reactionsLoadedRef = useRef(false);
+  const reactionsRequestRef = useRef<Promise<Record<string, { reaction: -1 | 0 | 1; likes: number }>> | null>(null);
+  // Shared catalog read; a failure clears it so the next template (or the next Like click) retries.
+  const loadGameReactions = useCallback(() => {
+    reactionsRequestRef.current ??= gameApi.catalog()
+      .then(res => {
+        const loaded: Record<string, { reaction: -1 | 0 | 1; likes: number }> = {};
+        for (const game of res.games ?? []) loaded[game.id] = { reaction: game.reaction, likes: game.likes };
+        setGameReactions(prev => ({ ...loaded, ...prev }));
+        return loaded;
+      })
+      .catch(error => {
+        reactionsRequestRef.current = null;
+        throw error;
+      });
+    return reactionsRequestRef.current;
+  }, []);
   useEffect(() => {
-    if (!feedRailActive || reactionsLoadedRef.current) return;
-    reactionsLoadedRef.current = true;
-    void gameApi.catalog()
-      .then(res => setGameReactions(prev => {
-        const next = { ...prev };
-        for (const game of res.games ?? []) if (!next[game.id]) next[game.id] = { reaction: game.reaction, likes: game.likes };
-        return next;
-      }))
-      .catch(() => { reactionsLoadedRef.current = false; /* offline: clicking Like explains why it cannot save */ });
-  }, [feedRailActive]);
+    if (!feedRailActive || !canReactToGame || !activeGameProjectId || gameReactions[activeGameProjectId]) return;
+    void loadGameReactions().catch(() => { /* offline: clicking Like explains why it cannot save */ });
+  }, [activeGameProjectId, canReactToGame, feedRailActive, gameReactions, loadGameReactions]);
   const activeReaction = activeGameProjectId
     ? gameReactions[activeGameProjectId] ?? { reaction: 0 as const, likes: bundledMatch?.likes ?? 0 }
     : null;
@@ -2100,10 +2108,12 @@ export function ArtifactBrowserPane({
   const likeSaving = Boolean(activeGameProjectId && likesSaving.has(activeGameProjectId));
   const toggleGameLike = useCallback(() => {
     const gameId = activeGameProjectId;
-    if (!gameId || !activeReaction || likesSaving.has(gameId)) return;
+    if (!gameId || likesSaving.has(gameId)) return;
     setLikesSaving(prev => new Set(prev).add(gameId));
-    const next: -1 | 0 | 1 = activeReaction.reaction === 1 ? 0 : 1;
-    void gameApi.react(gameId, next)
+    // Toggle from the saved state: read it first if it never loaded (e.g. the service started later).
+    const known = gameReactions[gameId];
+    void (known ? Promise.resolve(known) : loadGameReactions().then(loaded => loaded[gameId] ?? { reaction: 0 as const, likes: 0 }))
+      .then(current => gameApi.react(gameId, current.reaction === 1 ? 0 : 1))
       .then(game => setGameReactions(prev => ({ ...prev, [game.id]: { reaction: game.reaction, likes: game.likes } })))
       .catch(() => onNotify?.(t('Start the local game service to save reactions.'), 'info'))
       .finally(() => setLikesSaving(prev => {
@@ -2111,7 +2121,7 @@ export function ArtifactBrowserPane({
         rest.delete(gameId);
         return rest;
       }));
-  }, [activeGameProjectId, activeReaction, likesSaving, onNotify, t]);
+  }, [activeGameProjectId, gameReactions, likesSaving, loadGameReactions, onNotify, t]);
 
   const webColorScheme: BrowserColorScheme = webState?.colorScheme ?? 'auto';
   const webZoom = webState?.zoom ?? 1;
