@@ -244,7 +244,7 @@ export function ModelHub({ id, onExplore, onProvider, onModel, onUse, onScene, o
   }, [hub, accountKnown, signedIn, hasProject]);
   useEffect(() => {
     if (!hub || !showBfPill) { bfPillReportedRef.current = null; return; }
-    if (bfPillReportedRef.current === hub.id) return;
+    if (!accountKnown || bfPillReportedRef.current === hub.id) return;
     bfPillReportedRef.current = hub.id;
     send('surface_view', {
       page_name: 'model_hub',
@@ -256,7 +256,7 @@ export function ModelHub({ id, onExplore, onProvider, onModel, onUse, onScene, o
       ...slugField('hub_id', hub.id),
       signed_in: signedIn,
     });
-  }, [hub, showBfPill, entryId, signedIn]);
+  }, [hub, showBfPill, accountKnown, entryId, signedIn]);
   if (!hub) return <main className="om-explore"><div className="om-discovery-page">
     <div><BackToExploreButton onClick={onExplore} /></div>
     <section><h1 className="om-title">{t('Page unavailable')}</h1><p className="om-muted">{id}</p></section>

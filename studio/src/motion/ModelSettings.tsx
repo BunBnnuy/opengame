@@ -191,7 +191,7 @@ function formatPlanLabel(plan?: string | null) {
  */
 function AccountProviderHeader({ provider, openAccount, showToast }: { provider: ProviderConnection; openAccount?: () => void; showToast: ReturnType<typeof useToast>['showToast'] }) {
   // Until the summary loads (or if it fails), the callout below still signs in here rather than leaving the page.
-  const { t } = useI18n(), { state: { account }, busy, action, subscription, refreshBilling } = useAccountSignIn('provider_detail', showToast, provider);
+  const { t } = useI18n(), { state: { account }, busy, action, subscription, refreshBilling, trackBrowserSignIn } = useAccountSignIn('provider_detail', showToast, provider);
   const [refreshing, setRefreshing] = useState(false);
   const entry = tracking.settingsEntryFrom();
   const plan = upgradePlan(account);
@@ -239,7 +239,7 @@ function AccountProviderHeader({ provider, openAccount, showToast }: { provider:
       </div>
       {provider.configured && openAccount && !showStatusGuide && !showUpgradeGuide && !showBillingRecovery && <Button variant="ghost" className="om-button h-auto" onClick={openAccount}>{t('Manage account')}<RemixIcon name="arrow-right-line" size={14} /></Button>}
     </header>
-    {showStatusGuide ? <AccountStatus account={account!} busy={busy} action={action} showToast={showToast} />
+    {showStatusGuide ? <AccountStatus account={account!} busy={busy} action={action} showToast={showToast} onOpenBrowserSignIn={trackBrowserSignIn} />
       : showUpgradeGuide ? <UpgradeGuide plan={plan!} subscription={subscription} />
       : showBillingRecovery ? <section className="om-card om-card-stack">
         <h2 className="om-subtitle">{t(billingUnavailable ? 'OpenDesign billing is unavailable' : 'OpenDesign balance is too low')}</h2>

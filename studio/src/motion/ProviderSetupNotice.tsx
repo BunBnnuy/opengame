@@ -84,7 +84,7 @@ export function GenerationUpgradeNotice({ destination, onError, onUpgrade, visit
 
 export function GenerationSignInNotice({ destination, onSignIn, visit }: { visit?: OfferVisit; destination: StudioDestination; onSignIn: () => void }) {
   const { t } = useI18n(), toast = useToast();
-  const { state, busy, action } = useAccountSignIn(destination, toast.showToast);
+  const { state, busy, action, trackBrowserSignIn } = useAccountSignIn(destination, toast.showToast);
   const retry = !state.account && state.error;
   const { title, details } = generationOfferCopy(destination, 'sign_in');
   const signInCard = (onClick: () => void) => <MultimodalOfferCard kind="sign_in" visit={state.account ? visit : undefined} title={t(title)} details={t(details)}>
@@ -94,7 +94,7 @@ export function GenerationSignInNotice({ destination, onSignIn, visit }: { visit
     </Button>
   </MultimodalOfferCard>;
   return <>
-    {state.account ? <AccountStatus account={state.account} busy={busy} showToast={toast.showToast} renderSignIn={() => signInCard(() => {
+    {state.account ? <AccountStatus account={state.account} busy={busy} showToast={toast.showToast} onOpenBrowserSignIn={trackBrowserSignIn} renderSignIn={() => signInCard(() => {
         onSignIn();
         void action('login', visit && reportOfferClick(visit, 'sign_in', destination.model));
       })}
