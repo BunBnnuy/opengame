@@ -945,7 +945,7 @@ export class OpenDesignAccount {
   async identity() { await this.adopt(); return (await readSettings<{ id?: string }>(path.join(this.root, 'session.json'), {})).id; }
   async controlAccess(): Promise<{ baseUrl: string; key: string } | undefined> {
     const profile = await this.profile();
-    if (!signedInProfile(profile) || !profile?.controlKey) return undefined;
+    if (!signedInProfile(profile) || !profile?.controlKey || profile.apiUrl?.replace(/\/$/, '') !== productionApi) return undefined;
     return { baseUrl: productionApi, key: profile.controlKey };
   }
   async mediaModels(): Promise<Model[]> {

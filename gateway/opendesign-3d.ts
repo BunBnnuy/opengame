@@ -52,6 +52,7 @@ export type OpenDesign3dDiscovery = {
 };
 
 type SpatialCheckpoint = {
+  inputFingerprint?: string;
   uploadAssetIds?: string[];
   baseTaskId?: string;
   rigTaskId?: string;
@@ -231,6 +232,55 @@ function sleep(ms: number) {
 function checkpointFileFor(store: WorkspaceStore, domain: '3d' | 'world', requestId: string): string {
   const root = (store.workspaceStore ?? store).directory;
   return path.join(root, 'assets', 'requests', `spatial-${domain}-${assetHash(requestId)}.json`);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
+}
+
+function spatialInputFingerprint(input: {
+  domain: '3d' | 'world';
+  provider: SpatialProvider;
+  modelId: string;
+  operation: string;
+  prompt: string;
+  references: CapabilityScriptContext['references'];
+  options: Record<string, unknown>;
+  parameters: Record<string, unknown>;
+}): string {
+  return createHash('sha256')
+    .update(stableJson({
+      domain: input.domain,
+      provider: input.provider,
+      modelId: input.modelId,
+      operation: input.operation,
+      prompt: input.prompt.trim(),
+      references: input.references.map(ref => `${ref.assetId}:${ref.versionId}`),
+      options: input.options,
+      parameters: input.parameters,
+    }))
+    .digest('hex');
+}
+
+function assertCheckpointMatchesInput(checkpoint: SpatialCheckpoint, fingerprint: string, requestId: string): void {
+  const hasSavedState = Boolean(
+    checkpoint.uploadAssetIds?.length
+    || checkpoint.baseTaskId
+    || checkpoint.rigTaskId
+    || checkpoint.retargetTaskId
+    || checkpoint.worldTaskId,
+  );
+  if (hasSavedState && checkpoint.inputFingerprint !== fingerprint) {
+    throw new Error(
+      `REQUEST_ID_CONFLICT: requestId "${requestId}" already has a saved 3D checkpoint for different inputs. Reuse the exact original inputs to resume, or supply a new requestId.`,
+    );
+  }
+  checkpoint.inputFingerprint = fingerprint;
 }
 
 async function readCheckpoint(file: string): Promise<SpatialCheckpoint> {
@@ -670,6 +720,17 @@ export async function runOpenDesign3dScript(ctx: CapabilityScriptContext): Promi
 
   const checkpointPath = checkpointFileFor(ctx.store, '3d', ctx.requestId);
   const checkpoint = await readCheckpoint(checkpointPath);
+  const inputFingerprint = spatialInputFingerprint({
+    domain: '3d',
+    provider: config.provider,
+    modelId,
+    operation: effectiveOp,
+    prompt: ctx.prompt,
+    references: ctx.references,
+    options: ctx.options,
+    parameters: params,
+  });
+  assertCheckpointMatchesInput(checkpoint, inputFingerprint, ctx.requestId);
   const ensureUploadedRef = async (): Promise<string> => {
     if (checkpoint.uploadAssetIds?.[0]) return checkpoint.uploadAssetIds[0];
     const uploadId = await uploadReferenceImage(fetcher, config, ctx.references[0].filename, ctx.requestId);
@@ -1055,6 +1116,17 @@ export async function runOpenDesignWorldScript(ctx: CapabilityScriptContext): Pr
 
   const checkpointPath = checkpointFileFor(ctx.store, 'world', ctx.requestId);
   const checkpoint = await readCheckpoint(checkpointPath);
+  const inputFingerprint = spatialInputFingerprint({
+    domain: 'world',
+    provider: config.provider,
+    modelId,
+    operation,
+    prompt: ctx.prompt,
+    references: ctx.references,
+    options: ctx.options,
+    parameters: params,
+  });
+  assertCheckpointMatchesInput(checkpoint, inputFingerprint, ctx.requestId);
   let imageAssetIds: string[] | undefined = checkpoint.uploadAssetIds;
   if (!imageAssetIds && ctx.references.length > 0) {
     imageAssetIds = [];

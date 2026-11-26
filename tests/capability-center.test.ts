@@ -1349,6 +1349,26 @@ test('3d-asset capability gates honestly on AMR 3d_generations and executes Trip
       );
       assert.equal(submitted3dTasks.length, beforeCorrupt);
 
+      // Reusing a failed requestId's checkpoint with different inputs must fail with REQUEST_ID_CONFLICT and 0 paid submissions.
+      const mismatchReqId = 'tripo-checkpoint-input-mismatch-1';
+      await writeFile(
+        path.join(requestsDir, `spatial-3d-${assetHash(mismatchReqId)}.json`),
+        JSON.stringify({ inputFingerprint: 'different-input-fingerprint', baseTaskId: 'tripo_prior_paid_task' }),
+        'utf8',
+      );
+      const beforeMismatch = submitted3dTasks.length;
+      await assert.rejects(
+        api.call('openmotion_capability_run', {
+          action: 'run',
+          requestId: mismatchReqId,
+          capabilityId: '3d-asset',
+          model: 'opendesign:tripo-3.0',
+          prompt: 'Changed prompt reusing prior requestId',
+        }),
+        /REQUEST_ID_CONFLICT/,
+      );
+      assert.equal(submitted3dTasks.length, beforeMismatch);
+
       // Any OpenDesign audio model matching isSfxModelText exposes duration_seconds, loop, and prompt_influence.
       const customSfxOpts = generationOptions({
         id: 'opendesign:custom-sfx-v2',
