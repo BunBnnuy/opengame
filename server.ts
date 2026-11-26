@@ -78,7 +78,7 @@ import { scenarioHttp } from './gateway/scenario-http.ts';
 import { designHttp } from './design-projects.ts';
 
 const sharedStore = new WorkspaceStore();
-export type Service = { trackingHosts?: Map<string, { host: HostContext; createdAt: number }>; diagnostics?: { running: boolean; lastExport: number; events: number; window: number }; studio?: Studio; runtimeRoot?: string; nativeRoot?: string; ffmpeg?: boolean; ffmpegPromise?: Promise<boolean>; poller?: AdaptivePoller; switching?: boolean; studioPort?: number; browser?: WorkspaceBrowser; editorToken?: string; ensureStudio?: (projectId?: string) => Promise<Studio>; launchStudio?: (directory: string, port: number) => Promise<Studio>; phase1?: Phase1Service; phase1Mutation?: Promise<void>; tracking?: OmTracking; localGamePreview?: { hosts: string[]; url: (id: string, search?: string) => string } };
+export type Service = { trackingHosts?: Map<string, { host: HostContext; createdAt: number }>; diagnostics?: { running: boolean; lastExport: number; events: number; window: number }; studio?: Studio; runtimeRoot?: string; nativeRoot?: string; ffmpeg?: boolean; ffmpegPromise?: Promise<boolean>; poller?: AdaptivePoller; switching?: boolean; studioPort?: number; browser?: WorkspaceBrowser; editorToken?: string; ensureStudio?: (projectId?: string) => Promise<Studio>; launchStudio?: (directory: string, port: number) => Promise<Studio>; phase1?: Phase1Service; phase1Mutation?: Promise<void>; tracking?: OmTracking; localGamePreview?: (id: string, search?: string) => string };
 const service: Service = {};
 const working = new Set<string>();
 const runningExports = new Map<string, AbortController>();
@@ -1142,8 +1142,10 @@ export async function handler(req: IncomingMessage, res: ServerResponse, store =
     if (motionRequest && url.pathname.startsWith('/api/assets/') && await assetHttp(req, res, url, store)) return;
     if (motionRequest && await brandKitHttp(req, res, url, store.directory, input)) return;
     if (url.pathname === '/api/games' || url.pathname.startsWith('/api/games/')) {
-      const preview = context.localGamePreview;
-      const localPreviewUrl = host && preview?.hosts.includes(host) ? preview.url : undefined;
+      // Vite preserves the original loopback Host, including its own port.
+      const localPreviewUrl = host && /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(host)
+        ? context.localGamePreview
+        : undefined;
       if (await gameHttp(req, res, url, (store.workspaceStore ?? store).directory, input, context.runtimeRoot, { localPreviewUrl })) return;
     }
     if (motionRequest && url.pathname.startsWith('/api/design/') && await designHttp(req, res, url, (store.workspaceStore ?? store).directory, new URL(editorUrl).origin, input, ref => new AssetLibrary(store.workspaceStore ?? store).resolve(ref))) return;
@@ -1704,7 +1706,7 @@ export async function startServer(store = sharedStore, port = Number(process.env
     })
     : undefined;
   if (localGamePreview) {
-    context.localGamePreview = { hosts: [`127.0.0.1:${portInUse}`, `localhost:${portInUse}`], url: localGamePreview.url };
+    context.localGamePreview = localGamePreview.url;
     server.once('close', localGamePreview.close);
   }
   const gateway = gatewayFor(store, context.tracking);

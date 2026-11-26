@@ -93,7 +93,8 @@ export function storedInstruction(id: string): string | null {
 }
 
 /** Links that only open on this computer must not be presented as shareable. */
-export const isLocalOnly = (url: string) => url.startsWith('blob:') || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/)/.test(new URL(url, location.href).href);
+export const isLocalOnly = (url: string) => url.startsWith('blob:') || isLocalGamePreviewUrl(url)
+  || /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/)/.test(new URL(url, location.href).href);
 
 // Option artwork generated for OpenMotion (one consistent set for genres, styles and settings).
 const optionArt = import.meta.glob('./art/*.webp', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;

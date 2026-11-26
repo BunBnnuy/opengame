@@ -6,6 +6,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { startLocalGamePreview } from '../gateway/local-game-preview.ts';
 import { isLocalGamePreviewUrl } from '../shared/local-game-preview.ts';
+import { gameProjectsFor } from '../game-projects.ts';
+import { handler } from '../server.ts';
+import { WorkspaceStore } from '../workspace.ts';
+import { transport } from './http.ts';
 
 test('local game previews expose only the game mapped to the isolated origin', async t => {
   const workspace = await mkdtemp(path.join(tmpdir(), 'isolated-game-preview-'));
@@ -30,4 +34,50 @@ test('local game previews expose only the game mapped to the isolated origin', a
   }
   assert.equal((await read(url.pathname, 'POST')).status, 404);
   assert.equal((await read(url.pathname, 'GET', `localhost:${url.port}`)).status, 404);
+});
+
+test('the game routes advertise isolated previews through the local Studio proxy and redirect only top-level play', async t => {
+  const workspace = await mkdtemp(path.join(tmpdir(), 'isolated-game-routes-'));
+  const preview = await startLocalGamePreview(workspace);
+  t.after(async () => { preview.close(); await rm(workspace, { recursive: true, force: true }); });
+  const store = new WorkspaceStore(workspace);
+  const context = { localGamePreview: preview.url };
+  const send = transport(store, context, (req, res, store, context) => {
+    // The local Vite server forwards its own Host to the backend.
+    req.headers.host = '127.0.0.1:5173';
+    return handler(req, res, store, context);
+  });
+  const gamePath = '/motion-api/games/tidebreaker';
+  const capability = await send(gamePath + '/preview-url');
+  assert.equal(capability.status, 200);
+  assert.deepEqual(await capability.json(), { url: preview.url('tidebreaker') });
+
+  const search = '?rev=abc%2Bdef&mode=demo';
+  const entry = gamePath + '/play/index.html' + search;
+  const documentHeaders = { 'sec-fetch-dest': 'document' };
+  const redirected = await send(entry, { headers: documentHeaders });
+  assert.equal(redirected.status, 302);
+  assert.equal(redirected.headers.get('location'), preview.url('tidebreaker', search));
+  const iframe = await send(entry, { headers: { 'sec-fetch-dest': 'iframe' } });
+  assert.equal(iframe.status, 200);
+  assert.doesNotMatch(iframe.headers.get('content-security-policy')!, /\ballow-same-origin\b/);
+
+  const projects = gameProjectsFor(workspace);
+  const { game } = await projects.create({
+    prompt: 'Private game', genre: 'casual', style: 'pixel', setting: null, multiplayer: false,
+  });
+  const ownedPath = `/api/games/${game.id}`;
+  const ownedPreview = await send(ownedPath + '/preview-url');
+  assert.equal(ownedPreview.status, 200);
+  assert.deepEqual(await ownedPreview.json(), { url: null });
+  assert.equal((await send(ownedPath + '/play/index.html', { headers: documentHeaders })).status, 200);
+
+  const template = await projects.get('tidebreaker');
+  const getTemplate = t.mock.method(projects, 'get', async () => ({ ...template, multiplayer: true }));
+  assert.deepEqual(await (await send(gamePath + '/preview-url')).json(), { url: null });
+  getTemplate.mock.mockImplementation(async () => ({
+    ...template,
+    external: { url: 'https://example.test/game', author: 'Test', postUrl: 'https://example.test/post', model: 'Test', embeddable: true },
+  }));
+  assert.deepEqual(await (await send(gamePath + '/preview-url')).json(), { url: null });
 });
