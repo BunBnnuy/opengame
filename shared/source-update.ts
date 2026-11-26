@@ -813,16 +813,23 @@ export async function backupBuildOutputs(
 export async function restoreBuildOutputs(
   backups: BuildOutputBackupSet | null,
   move: (src: string, dest: string) => Promise<void> = rename,
-): Promise<void> {
-  if (!backups) return;
+): Promise<boolean> {
+  if (!backups) return true;
+  let allRestored = true;
   for (const item of [...backups.entries].reverse()) {
-    await rm(item.target, { recursive: true, force: true }).catch(() => {});
-    if (existsSync(item.backup)) {
-      await mkdir(path.dirname(item.target), { recursive: true }).catch(() => {});
-      await move(item.backup, item.target).catch(() => {});
+    if (!existsSync(item.backup)) continue;
+    try {
+      await rm(item.target, { recursive: true, force: true });
+      await mkdir(path.dirname(item.target), { recursive: true });
+      await move(item.backup, item.target);
+    } catch {
+      allRestored = false;
     }
   }
-  await rm(backups.rootDir, { recursive: true, force: true }).catch(() => {});
+  if (allRestored) {
+    await rm(backups.rootDir, { recursive: true, force: true }).catch(() => {});
+  }
+  return allRestored;
 }
 
 export async function discardBuildBackups(backups: BuildOutputBackupSet | null): Promise<void> {
@@ -1127,13 +1134,14 @@ export async function applySourceUpdate(options: SourceUpdateOptions): Promise<S
       }
 
       // Always restore backed-up build outputs (or discard backups if git reset failed)
-      // regardless of whether dependency reinstall succeeds, so no untracked .rollback-*
-      // directories or missing studio/build outputs are ever left behind.
+      // regardless of whether dependency reinstall succeeds, so studio/build is recovered
+      // whenever possible and any unrestored backup remains preserved under gitignored
+      // .artifacts/install for manual recovery.
       const restoredBuildState = gitRolledBack ? await loadBuildStateModule(repoRoot).catch(() => null) : null;
       if (buildBackups) {
         if (gitRolledBack) {
-          await restoreBuildOutputs(buildBackups);
-          if (restoredBuildState && existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'))) {
+          const outputsRestored = await restoreBuildOutputs(buildBackups);
+          if (outputsRestored && restoredBuildState && existsSync(path.join(repoRoot, '.artifacts/install/source-build.json'))) {
             await restoredBuildState.recordSourceBuild(repoRoot).catch(() => {});
           }
         } else {

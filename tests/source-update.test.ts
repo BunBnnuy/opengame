@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import {
   applySourceUpdate,
   backupBuildOutputs,
+  restoreBuildOutputs,
   checkSourceUpdate,
   classifyChangedFiles,
   compactRuntimeUpdateNotice,
@@ -968,6 +969,36 @@ test('backupBuildOutputs stores backups under gitignored .artifacts/install and 
   const kept = await backupBuildOutputs(checkout);
   assert.ok(kept.rootDir.startsWith(path.join(checkout, '.artifacts/install/')));
   assert.equal(await runGit(checkout, ['status', '--porcelain=v1', '--untracked-files=all']), '');
+});
+
+test('restoreBuildOutputs retains backup directory when a restore move fails and removes it when all succeed', async t => {
+  const { checkout } = await createGitFixtures(t);
+  await mkdir(path.join(checkout, 'web'), { recursive: true });
+  await writeFile(path.join(checkout, 'web/inline-video.html'), '<html>inline</html>');
+
+  const backups = await backupBuildOutputs(checkout);
+  const { existsSync } = await import('node:fs');
+  const { rename } = await import('node:fs/promises');
+
+  // Fail restoring studio/build while allowing web/inline-video.html to restore.
+  const partialOk = await restoreBuildOutputs(backups, async (src, dest) => {
+    if (dest.endsWith(path.join('studio', 'build'))) {
+      throw new Error('EBUSY: simulated locked studio/build');
+    }
+    await rename(src, dest);
+  });
+
+  assert.equal(partialOk, false);
+  assert.equal(await readFile(path.join(checkout, 'web/inline-video.html'), 'utf8'), '<html>inline</html>');
+  assert.equal(existsSync(backups.rootDir), true);
+  assert.equal(await readFile(path.join(backups.rootDir, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
+  assert.equal(await runGit(checkout, ['status', '--porcelain=v1', '--untracked-files=all']), '');
+
+  // Retrying restore once the lock clears restores studio/build and removes rootDir.
+  const fullOk = await restoreBuildOutputs(backups);
+  assert.equal(fullOk, true);
+  assert.equal(await readFile(path.join(checkout, 'studio/build/index.html'), 'utf8'), '<html>v1</html>');
+  assert.equal(existsSync(backups.rootDir), false);
 });
 
 test('syncInstalledHostSkills does not create missing host directories', async t => {
