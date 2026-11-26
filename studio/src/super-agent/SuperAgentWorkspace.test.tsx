@@ -3689,7 +3689,9 @@ it('auto-enters Game mode when opened from Game Studio, plays games in Artifact 
   await act(async () => evensongCover.click());
   expect(gameFrame()).toBe(originalFrame);
 
-  const reload = container.querySelector<HTMLButtonElement>('.om-sa-viewer button[aria-label="Reload"]')!;
+  // The template rail replaces the toolbar reload with its own Replay.
+  expect(container.querySelector('.om-sa-viewer button[aria-label="Reload"]')).toBeNull();
+  const reload = container.querySelector<HTMLButtonElement>('.om-sa-template-feed-action[aria-label="Replay"]')!;
   await act(async () => reload.click());
   expect(gameFrame()).not.toBe(originalFrame);
 
