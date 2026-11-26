@@ -1499,7 +1499,7 @@ export function ModeResourceShowcase({
   useEffect(() => {
     gameFeedRef.current?.(activeFilter === 'mine' ? [] : filteredGames.filter(game => game.source !== 'mine'));
   }, [activeFilter, filteredGames]);
-  useEffect(() => () => gameFeedRef.current?.([]), []);
+  // No reset on unmount: expanding the viewer hides this list, and the preview keeps stepping through it.
 
   const totalCount = showGameCards
     ? filteredGames.length

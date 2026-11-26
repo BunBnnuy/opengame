@@ -447,6 +447,8 @@ export function SuperAgentWorkspace({
   const handledRequestedGameRef = useRef<string | null>(null);
   // Set while the preview is writing its template into the route; undefined when nothing is pending.
   const pendingRouteGameRef = useRef<string | null | undefined>(undefined);
+  // The last game the route asked for that has been resolved (opened, or found missing).
+  const settledRouteGameRef = useRef<string | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const sidebarDockedRef = useRef(true);
@@ -1674,15 +1676,22 @@ export function SuperAgentWorkspace({
       return;
     }
 
+    const lookupId = requestedGameId;
     void gameApi.catalog()
       .then(res => {
-        if (cancelled) return;
-        const found = res.games?.find(item => item.id === requestedGameId);
-        if (found) {
-          void handlePlayGame(found);
+        const found = res.games?.find(item => item.id === lookupId);
+        // Unknown id: nothing will open, so the template preview may write the route again.
+        if (!found) {
+          settledRouteGameRef.current = lookupId;
+          return;
         }
+        if (cancelled) return;
+        void handlePlayGame(found);
       })
-      .catch(() => { /* ignore if game service is offline */ });
+      .catch(() => {
+        /* ignore if game service is offline; the route request is resolved either way */
+        settledRouteGameRef.current = lookupId;
+      });
 
     return () => {
       cancelled = true;
@@ -1733,8 +1742,6 @@ export function SuperAgentWorkspace({
 
   // Mirror the shown template into the route (replace, no history entry) so a reload reopens it.
   const syncedTemplateGameRef = useRef<string | null>(null);
-  // The last game the route asked for that actually opened in the preview.
-  const settledRouteGameRef = useRef<string | null>(null);
   useEffect(() => {
     if (!active || !onActiveTemplateGameChange) return;
     if (playingGameId && playingGameId === requestedGameId) settledRouteGameRef.current = playingGameId;
